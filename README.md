@@ -1,5 +1,5 @@
 ![Logo](admin/Audi_logo_rings.png)
-# ioBroker.vw-carnet
+# ioBroker.myAudi
 Adapter for connecting to Volkswagen Car-Net and get access to the data of your car. (An active "security and service plus" contract in VW CarNet is nescessary for this adapter to work!)
 After installing the only thing to configure is the Car-Net username and password.
 
