@@ -1,98 +1,50 @@
-![Logo](admin/Audi_logo_rings.png)
+# 🎯 Darts Turnierplaner
 
-NEWS: I am currently working on the additional authentication which is needed when trying to lock or unlock the car for example. This will still take some time but I´m getting closer day by day. Please hold the line!
+Webanwendung zum Planen und Organisieren von Darts-Turnieren im **Einzel** und **Doppel**, mit Anmeldung, Benutzerkonten und **Seasons**, in denen Spieler über mehrere Termine hinweg Punkte sammeln.
 
-# ioBroker.myAudi
-Adapter for connecting to Volkswagen Car-Net and get access to the data of your car. (An active "security and service plus" contract in VW CarNet is nescessary for this adapter to work!)
-After installing the only thing to configure is the Car-Net username and password.
+Es werden keine externen Abhängigkeiten benötigt, nur Node.js ≥ 18.
 
-The Google API Key is optional and is only nescessary to retreive geo-location details (address) of the parked car. The adapter works of course also fine without this information.
-
-## Usage
-After starting the adapter the data is received immediately but only once.
-For frequently data-update you have to create an additional script to send a command to the adapter.
-I would recomment a minimum interval of 15 minutes.
-
-Example for an update-command every 30 minutes: (vw-carnet instance is 0)
-
-```javascript
-var schedule;
-
-schedule = schedule('*/30 * * * *', function () {
-    if (getState('vw-carnet.0.connection'))/*If connected to VW car-net server*/{
-    sendTo('vw-carnet.0', 'update', {
-        'parameter1': 'tmp'
-        });
-    }
-});
+```bash
+npm start          # startet auf http://localhost:3000
+npm test           # Turnier-Logik und API testen
 ```
 
-This might be changed in a future update but it is the current state.
+Umgebungsvariablen: `PORT` (Standard `3000`) und `DATA_FILE` (Standard `data/db.json`). Alle Daten liegen in dieser einen JSON-Datei, für ein Backup genügt eine Kopie davon.
 
+## Funktionen
 
-## Changelog
-### 0.3.1a (2019-03-07)
-* (Sneak-L8) optimized error handling on http request
-### 0.3.1 (2019-03-06)
-* (RPerkuhn) implemented option to update via button in admin
-### 0.3.0 (2019-03-06)
-* (RPerkuhn) implemented enhanced function start and stop charge via button in admin
-### 0.2.3a (2019-03-06)
-* (Sneak-L8) improved stability, catch empty responses
-### 0.2.3 (2019-03-03)
-* (Sneak-L8) catch some errors
-* (Sneak-L8) correct handling of data when car is moving 
-### 0.2.2 (2019-02-26)
-* (BasGo) Changed logging to use ioBroker logging severities
-### 0.2.1 (2019-02-23)
-* (Sneak-L8) internal code cleaning
-* (Sneak-L8) option to update data automatically by timer
-### 0.2.0 (2019-02-10)
-* (RPerkuhn) start a new release for more stability
-* (RPerkuhn) additional states to show which services are available
-* (RPerkuhn) additional states to show last update of each service
-### 0.1.7 (2019-02-07)
-* (BasGo) Added adBlue remaining distance
-* (BasGo) Added compact mode
-### 0.1.6 (2018-12-28)
-* (RPerkuhn) Implementation of Golf GTE modelyear - 2017
-### 0.1.5 (2018-12-14)
-* (RPerkuhn) implementation of loggingmode
-### 0.1.4 (2018-12-12)
-* (RPerkuhn) bugfixes
-### 0.1.3 (2018-12-10)
-* (RPerkuhn) implementation of dynamic display of state names in English or German depending on ioBroker systemlanguage
-### 0.1.2 (2018-12-08)
-* (RPerkuhn) integration of door and window states
-### 0.1.1 (2018-12-07)
-* (RPerkuhn) checkboxes to enable/disable retrieve of climater-, eManager- and locationdata
-### 0.1.0 (2018-12-03)
-* (RPerkuhn) first alpha release
-### 0.0.x (2018-11-09)
-* (RPerkuhn) initial setup of adapter and lab-versions until 0.1.x
+- **Registrierung und Login**: Wer sich als Erstes registriert, wird automatisch **Administrator**. Admins können weitere Admins ernennen und **Gastspieler** ohne Account anlegen.
+- **Seasons**: Zeitraum, aktive Season und eine frei einstellbare **Punktevergabe**. Die Season-Tabelle zeigt eine Gesamt-, Einzel- und Doppelwertung, Titel, Finals, Vorrunden-Siege und die Punkte je Termin.
+- **Termine**: Einzel oder Doppel, beliebige Teilnehmerzahl mit optionalem Maximum, Anzahl der Vorrundenspiele (Standard 5) und einstellbares Best-of für Vorrunde, Cup und Finale.
+- **Anmeldung**: Spieler melden sich selbst an. Im Doppel geht das mit Partner oder als „Partner gesucht“. Andere können einem Spieler ohne Partner beitreten. Der Admin kann übrige Einzelspieler per Knopfdruck zu Teams auslosen.
+- **Ergebnisse** tragen der Admin oder die beteiligten Spieler selbst ein. Die Seite aktualisiert sich während des Turniers alle 15 Sekunden.
 
-p.s.: I like to give many thanks to https://github.com/wez3/volkswagen-carnet-client from where I learned to get access to all the CarNet informations. I also like to thank Sneak-L8 for motivating me to start this project with his script to access CarNet via ioBroker.
+## Turniermodus
 
-## License
+1. **Vorrunde**: Jeder Teilnehmer spielt 5 Spiele gegen zufällig ausgeloste Gegner. Wiederholte Begegnungen werden nach Möglichkeit vermieden. Bei ungerader Teilnehmerzahl gibt es pro Runde ein Freilos, das als Sieg zählt (gleichmäßig verteilt). Die Tabelle sortiert nach Siegen, Leg-Differenz, gewonnenen Legs und zuletzt per Los.
+2. **Cup-Einteilung** (bis zu 3 Cups): Das obere Drittel kommt in den **Pro Cup**, das mittlere in den **Advanced Cup**, das untere in den **Beginners Cup**. Überzählige Plätze gehen an die oberen Cups. Die Anzahl der Cups wählt der Admin, voreingestellt sind ca. 4 oder mehr Teilnehmer je Cup.
+3. **Cup**: Es gilt Doppel-K.o. Wer einmal verliert, wechselt ins **Losers Bracket** und kann darüber noch das Halbfinale erreichen. Wer zweimal verliert, scheidet aus. Gespielt wird, bis im Winners Bracket und im Losers Bracket je 2 übrig sind.
+4. **Halbfinale und Finale** werden im einfachen K.o. gespielt (Winners gegen Losers über Kreuz). Wer hier verliert, ist raus.
 
-The MIT License (MIT)
+Gesetzt wird nach der Vorrunden-Tabelle: In Runde 1 spielt der Beste gegen den Schwächsten, danach werden die Paarungen ausgelost. Hat ein Admin ein Ergebnis falsch eingetragen, kann er die zuletzt ausgeloste Runde zurücknehmen und das Ergebnis korrigieren.
 
-Copyright (c) 2018 RPerkuhn
+### Punkte (Standard, je Season änderbar)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+| | Sieger | Finalist | Halbfinale | sonstige |
+|---|---|---|---|---|
+| Pro Cup | 20 | 15 | 10 | 5 |
+| Advanced Cup | 12 | 9 | 6 | 3 |
+| Beginners Cup | 8 | 6 | 4 | 2 |
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+Dazu kommen **1 Punkt für die Teilnahme** und **1 Punkt je Vorrunden-Sieg** (Freilose ausgenommen). Im Doppel erhalten beide Spieler die Punkte. In die Season-Wertung fließen nur abgeschlossene Termine ein.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+## Aufbau
+
+```
+server.js            HTTP-Server (node:http)
+src/tournament.js    Turnier-Logik (Vorrunde, Cups, Doppel-K.o., Punkte)
+src/app.js           REST-API, Sessions, Rechte
+src/store.js         JSON-Speicher, Passwort-Hashing (scrypt)
+public/              Oberfläche (Vanilla JS, ohne Build-Schritt)
+test/                node:test-Tests
+```

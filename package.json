@@ -1,52 +1,15 @@
 {
-  "name": "iobroker.vw-carnet",
-  "version": "0.3.1a",
-  "description": "ioBroker Volkswagen Car-Net adapter",
-  "author": {
-    "name": "Ralf Perkuhn",
-    "email": "rperkuhn@online.de"
-  },
-  "contributors": [
-    {
-      "name": "RPerkuhn",
-      "email": "rperkuhn@online.de"
-    },
-    {
-      "name": "BasGo",
-      "email": "basgo@gmx.de"
-    },
-    {
-      "name": "Sneak-L8",
-      "email": "git@sengler.de"
-    }
-  ],
-  "homepage": "https://github.com/RPerkuhn/ioBroker.vw-carnet",
-  "license": "MIT",
-  "keywords": [
-    "ioBroker",
-    "car",
-    "smarthome",
-    "elektromobility"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/RPerkuhn/ioBroker.vw-carnet"
-  },
-  "dependencies": {
-    "request": "^2.87.0",
-    "@iobroker/adapter-core": "^1.0.2"
-  },
-  "devDependencies": {
-    "gulp": "^3.9.1",
-    "mocha": "^5.2.0",
-    "chai": "^4.1.2"
-  },
-  "main": "vw-carnet.js",
+  "name": "darts-turnierplaner",
+  "version": "1.0.0",
+  "description": "Planung und Organisation von Darts-Turnieren (Einzel & Doppel) mit Vorrunde, 3 Cups, Doppel-K.o. und Season-Wertung",
+  "main": "server.js",
+  "private": true,
   "scripts": {
-    "test": "node node_modules/mocha/bin/mocha --exit"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
-  "bugs": {
-    "url": "https://github.com/RPerkuhn/ioBroker.vw-carnet/issues"
+  "engines": {
+    "node": ">=18"
   },
-  "readmeFilename": "README.md"
+  "license": "MIT"
 }
