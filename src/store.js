@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const EMPTY = () => ({ users: [], sessions: [], seasons: [], events: [] });
+const DEFAULT_SETTINGS = { registrationOpen: true, requireApproval: true };
+const EMPTY = () => ({ users: [], sessions: [], seasons: [], events: [], settings: { ...DEFAULT_SETTINGS } });
 
 class Store {
   constructor(file) {
@@ -13,13 +14,19 @@ class Store {
     if (file && fs.existsSync(file)) {
       this.data = { ...EMPTY(), ...JSON.parse(fs.readFileSync(file, 'utf8')) };
     }
+    this.data.settings = { ...DEFAULT_SETTINGS, ...this.data.settings };
+    // Sessions werden nur noch gehasht gespeichert – alte Klartext-Sessions verwerfen
+    this.data.sessions = this.data.sessions.filter((s) => s.tokenHash);
+    // Bestehende Accounts aus der Zeit vor der Freischaltung gelten als freigeschaltet
+    for (const u of this.data.users) if (u.approved === undefined) u.approved = true;
   }
 
   save() {
     if (!this.file) return;
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+    // Nur der Dienst-Benutzer darf die Datei lesen (enthält Passwort-Hashes)
+    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
   }
 }
@@ -34,12 +41,15 @@ function hashPassword(password) {
   return `${salt}:${hash}`;
 }
 
+// Wird verwendet, wenn es den Benutzer nicht gibt – gleiche Rechenzeit verhindert,
+// dass man über die Antwortzeit herausfindet, welche Benutzernamen existieren.
+const DUMMY_HASH = hashPassword('dummy-password');
+
 function verifyPassword(password, stored) {
-  if (!stored) return false;
-  const [salt, hash] = stored.split(':');
+  const [salt, hash] = (stored || DUMMY_HASH).split(':');
   const test = crypto.scryptSync(password, salt, 64);
   const expected = Buffer.from(hash, 'hex');
-  return expected.length === test.length && crypto.timingSafeEqual(expected, test);
+  return !!stored && expected.length === test.length && crypto.timingSafeEqual(expected, test);
 }
 
 module.exports = { Store, newId, hashPassword, verifyPassword };

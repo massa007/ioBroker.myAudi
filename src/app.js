@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const T = require('./tournament');
 const { newId, hashPassword, verifyPassword } = require('./store');
+const { RateLimiter, securityHeaders, clientIp, isHttps, sameOrigin, hashToken, safeEqual } = require('./security');
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -28,13 +29,23 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
 };
+
+const MAX_BODY = 100 * 1024;
+const PASSWORD_MIN = 8;
 
 function parseCookies(header = '') {
   const out = {};
   for (const part of header.split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    try {
+      out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch {
+      /* ungültiges Cookie ignorieren */
+    }
   }
   return out;
 }
@@ -54,9 +65,29 @@ function oddBestOf(v, fallback) {
   return n % 2 === 1 ? n : n + 1;
 }
 
-function createApp(store, { publicDir, rng = Math.random } = {}) {
+function checkPassword(pw) {
+  if (typeof pw !== 'string' || pw.length < PASSWORD_MIN) fail(400, `Passwort muss mindestens ${PASSWORD_MIN} Zeichen haben`);
+  if (pw.length > 200) fail(400, 'Passwort ist zu lang');
+  return pw;
+}
+
+/**
+ * @param {object} opts
+ * @param {string} [opts.publicDir]   Verzeichnis der Oberfläche
+ * @param {string} [opts.setupToken]  Einmal-Code, der für den ersten Admin-Account nötig ist
+ * @param {boolean} [opts.trustProxy] X-Forwarded-* Header eines Reverse Proxys auswerten
+ * @param {boolean} [opts.secureCookies] Cookies immer mit Secure-Flag setzen
+ */
+function createApp(store, { publicDir, rng = Math.random, setupToken = null, trustProxy = false, secureCookies = false } = {}) {
   const db = store.data;
   const routes = [];
+  const limits = {
+    loginIp: new RateLimiter(30, 15 * 60 * 1000),
+    loginUser: new RateLimiter(5, 15 * 60 * 1000),
+    register: new RateLimiter(5, 60 * 60 * 1000),
+    writes: new RateLimiter(300, 60 * 1000),
+  };
+  const hasAdmin = () => db.users.some((u) => u.role === 'admin');
 
   const on = (method, pattern, handler) => {
     const keys = [];
@@ -74,10 +105,24 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
   // ------------------------------------------------------------------ helpers
 
   const userById = (id) => db.users.find((u) => u.id === id);
-  const publicUser = (u) =>
-    u && { id: u.id, name: u.name, username: u.username || null, role: u.role, guest: !!u.guest };
+  const publicUser = (u, viewer) =>
+    u && {
+      id: u.id,
+      name: u.name,
+      // Benutzernamen (= Login-Namen) sehen nur Admins und der Benutzer selbst
+      username: viewer && (viewer.role === 'admin' || viewer.id === u.id) ? u.username || null : null,
+      role: u.role,
+      guest: !!u.guest,
+      approved: u.guest || u.role === 'admin' || u.approved !== false,
+    };
 
   const requireUser = (ctx) => ctx.user || fail(401, 'Bitte zuerst anmelden');
+  const isApproved = (u) => u.role === 'admin' || !db.settings.requireApproval || u.approved !== false;
+  const requireApproved = (ctx) => {
+    const u = requireUser(ctx);
+    if (!isApproved(u)) fail(403, 'Dein Account wurde noch nicht von einem Admin freigeschaltet');
+    return u;
+  };
   const requireAdmin = (ctx) => {
     requireUser(ctx);
     if (ctx.user.role !== 'admin') fail(403, 'Nur für Administratoren');
@@ -258,15 +303,22 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
     };
   }
 
-  function createSession(res, user) {
+  function cookieFlags(ctx) {
+    return `HttpOnly; SameSite=Lax; Path=/${secureCookies || ctx.https ? '; Secure' : ''}`;
+  }
+
+  function createSession(ctx, res, user) {
     const now = Date.now();
     db.sessions = db.sessions.filter((s) => s.expires > now);
+    if (ctx.sessionHash) db.sessions = db.sessions.filter((s) => s.tokenHash !== ctx.sessionHash);
     const token = crypto.randomBytes(32).toString('hex');
-    db.sessions.push({ token, userId: user.id, expires: now + SESSION_MS });
-    res.setHeader(
-      'Set-Cookie',
-      `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MS / 1000}`
-    );
+    // In der Datenbank liegt nur der Hash – ein geleaktes Backup erlaubt keine Übernahme von Sitzungen
+    db.sessions.push({ tokenHash: hashToken(token), userId: user.id, expires: now + SESSION_MS });
+    res.setHeader('Set-Cookie', `sid=${token}; ${cookieFlags(ctx)}; Max-Age=${SESSION_MS / 1000}`);
+  }
+
+  function clearSessionCookie(ctx, res) {
+    res.setHeader('Set-Cookie', `sid=; ${cookieFlags(ctx)}; Max-Age=0`);
   }
 
   function readEventFields(body, event) {
@@ -331,6 +383,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
     if (!uniq.length || uniq.length > entrySize(event)) fail(400, 'Ungültige Spieleranzahl');
     for (const pid of uniq) {
       const u = userById(pid) || fail(400, 'Spieler nicht gefunden');
+      if (!isApproved(u)) fail(400, `${u.name} ist noch nicht freigeschaltet`);
       if (findEntryOf(event, pid)) fail(400, `${u.name} ist bereits angemeldet`);
     }
     const entry = { id: newId(), players: uniq, teamName: str(teamName, 60), registeredAt: new Date().toISOString() };
@@ -344,44 +397,68 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
 
   // ------------------------------------------------------------------ auth
 
-  on('GET', '/api/me', (ctx) => ({ user: publicUser(ctx.user), needsSetup: db.users.every((u) => u.guest) }));
+  on('GET', '/api/me', (ctx) => ({
+    user: publicUser(ctx.user, ctx.user),
+    approved: ctx.user ? isApproved(ctx.user) : null,
+    needsSetup: !hasAdmin(),
+    registrationOpen: db.settings.registrationOpen,
+    requireApproval: db.settings.requireApproval,
+  }));
 
   on('POST', '/api/register', (ctx, res) => {
+    const setup = !hasAdmin();
+    if (!setup && !db.settings.registrationOpen) fail(403, 'Die Registrierung ist derzeit geschlossen');
+    if (limits.register.blocked(ctx.ip)) fail(429, 'Zu viele Registrierungen von dieser Adresse – bitte später erneut versuchen');
+    if (setup) {
+      // Ohne Setup-Code könnte jeder Besucher einer frisch installierten Seite Admin werden
+      if (!setupToken || !safeEqual(str(ctx.body.setupCode, 100), setupToken)) {
+        fail(403, 'Für den ersten Admin-Account wird der Setup-Code aus dem Server-Log benötigt');
+      }
+    }
     const username = str(ctx.body.username, 40).toLowerCase();
     const name = str(ctx.body.name, 60);
-    const password = typeof ctx.body.password === 'string' ? ctx.body.password : '';
     if (!/^[a-z0-9_.-]{3,40}$/.test(username)) fail(400, 'Benutzername: 3–40 Zeichen (a–z, 0–9, _ . -)');
     if (!name) fail(400, 'Anzeigename fehlt');
-    if (password.length < 6) fail(400, 'Passwort muss mindestens 6 Zeichen haben');
+    const password = checkPassword(ctx.body.password);
     if (db.users.some((u) => u.username === username)) fail(400, 'Benutzername ist bereits vergeben');
-    const first = !db.users.some((u) => !u.guest);
+    limits.register.hit(ctx.ip);
     const user = {
       id: newId(),
       username,
       name,
       password: hashPassword(password),
-      role: first ? 'admin' : 'player',
+      role: setup ? 'admin' : 'player',
       guest: false,
+      approved: setup || !db.settings.requireApproval,
       createdAt: new Date().toISOString(),
     };
     db.users.push(user);
-    createSession(res, user);
-    return { user: publicUser(user) };
+    createSession(ctx, res, user);
+    return { user: publicUser(user, user), approved: isApproved(user) };
   });
 
   on('POST', '/api/login', (ctx, res) => {
     const username = str(ctx.body.username, 40).toLowerCase();
+    const userKey = `${ctx.ip}|${username}`;
+    if (limits.loginIp.blocked(ctx.ip) || limits.loginUser.blocked(userKey)) {
+      const wait = Math.max(limits.loginIp.retryAfter(ctx.ip), limits.loginUser.retryAfter(userKey));
+      fail(429, `Zu viele Fehlversuche – bitte in ${Math.ceil(wait / 60)} Minuten erneut versuchen`);
+    }
     const user = db.users.find((u) => u.username === username && !u.guest);
-    if (!user || !verifyPassword(String(ctx.body.password || ''), user.password)) {
+    const ok = verifyPassword(String(ctx.body.password || '').slice(0, 200), user?.password);
+    if (!user || !ok) {
+      limits.loginIp.hit(ctx.ip);
+      limits.loginUser.hit(userKey);
       fail(401, 'Benutzername oder Passwort falsch');
     }
-    createSession(res, user);
-    return { user: publicUser(user) };
+    limits.loginUser.reset(userKey);
+    createSession(ctx, res, user);
+    return { user: publicUser(user, user), approved: isApproved(user) };
   });
 
   on('POST', '/api/logout', (ctx, res) => {
-    db.sessions = db.sessions.filter((s) => s.token !== ctx.token);
-    res.setHeader('Set-Cookie', 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+    if (ctx.sessionHash) db.sessions = db.sessions.filter((s) => s.tokenHash !== ctx.sessionHash);
+    clearSessionCookie(ctx, res);
     return { ok: true };
   });
 
@@ -389,32 +466,51 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
     const user = requireUser(ctx);
     if ('name' in ctx.body) user.name = str(ctx.body.name, 60) || fail(400, 'Anzeigename fehlt');
     if (ctx.body.newPassword) {
-      if (!verifyPassword(String(ctx.body.currentPassword || ''), user.password)) fail(400, 'Aktuelles Passwort falsch');
-      if (String(ctx.body.newPassword).length < 6) fail(400, 'Passwort muss mindestens 6 Zeichen haben');
-      user.password = hashPassword(String(ctx.body.newPassword));
+      if (!verifyPassword(String(ctx.body.currentPassword || '').slice(0, 200), user.password)) fail(400, 'Aktuelles Passwort falsch');
+      user.password = hashPassword(checkPassword(ctx.body.newPassword));
+      // Alle anderen Sitzungen dieses Benutzers beenden
+      db.sessions = db.sessions.filter((s) => s.userId !== user.id || s.tokenHash === ctx.sessionHash);
     }
-    return { user: publicUser(user) };
+    return { user: publicUser(user, user) };
+  });
+
+  // ------------------------------------------------------------------ settings
+
+  on('GET', '/api/settings', (ctx) => {
+    requireAdmin(ctx);
+    return db.settings;
+  });
+
+  on('PUT', '/api/settings', (ctx) => {
+    requireAdmin(ctx);
+    if ('registrationOpen' in ctx.body) db.settings.registrationOpen = !!ctx.body.registrationOpen;
+    if ('requireApproval' in ctx.body) db.settings.requireApproval = !!ctx.body.requireApproval;
+    return db.settings;
   });
 
   // ------------------------------------------------------------------ users
 
   on('GET', '/api/users', (ctx) => {
     requireUser(ctx);
-    return db.users.map(publicUser).sort((a, b) => a.name.localeCompare(b.name));
+    let list = db.users;
+    // Nicht freigeschaltete Accounts sieht nur der Admin
+    if (ctx.user.role !== 'admin') list = list.filter((u) => u.id === ctx.user.id || isApproved(u) || u.guest);
+    return list.map((u) => publicUser(u, ctx.user)).sort((a, b) => a.name.localeCompare(b.name));
   });
 
   on('POST', '/api/users/guest', (ctx) => {
     requireAdmin(ctx);
     const name = str(ctx.body.name, 60) || fail(400, 'Name fehlt');
-    const user = { id: newId(), username: null, name, password: null, role: 'player', guest: true, createdAt: new Date().toISOString() };
+    const user = { id: newId(), username: null, name, password: null, role: 'player', guest: true, approved: true, createdAt: new Date().toISOString() };
     db.users.push(user);
-    return publicUser(user);
+    return publicUser(user, ctx.user);
   });
 
   on('PUT', '/api/users/:id', (ctx) => {
     requireAdmin(ctx);
     const user = userById(ctx.params.id) || fail(404, 'Spieler nicht gefunden');
     if ('name' in ctx.body) user.name = str(ctx.body.name, 60) || fail(400, 'Name fehlt');
+    if ('approved' in ctx.body) user.approved = !!ctx.body.approved;
     if ('role' in ctx.body) {
       if (!['admin', 'player'].includes(ctx.body.role)) fail(400, 'Ungültige Rolle');
       if (user.guest && ctx.body.role === 'admin') fail(400, 'Gastspieler können keine Admins sein');
@@ -422,16 +518,23 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
         fail(400, 'Es muss mindestens einen Admin geben');
       }
       user.role = ctx.body.role;
+      if (user.role === 'admin') user.approved = true;
     }
-    return publicUser(user);
+    if (ctx.body.password) {
+      if (user.guest) fail(400, 'Gastspieler haben kein Passwort');
+      user.password = hashPassword(checkPassword(ctx.body.password));
+      db.sessions = db.sessions.filter((s) => s.userId !== user.id);
+    }
+    return publicUser(user, ctx.user);
   });
 
   on('DELETE', '/api/users/:id', (ctx) => {
     requireAdmin(ctx);
     const user = userById(ctx.params.id) || fail(404, 'Spieler nicht gefunden');
-    if (!user.guest) fail(400, 'Nur Gastspieler können gelöscht werden');
+    if (user.role === 'admin') fail(400, 'Admins können nicht gelöscht werden – zuerst Admin-Rechte entziehen');
     if (db.events.some((e) => findEntryOf(e, user.id))) fail(400, 'Spieler ist bei einem Termin eingetragen');
     db.users.splice(db.users.indexOf(user), 1);
+    db.sessions = db.sessions.filter((s) => s.userId !== user.id);
     return { ok: true };
   });
 
@@ -486,6 +589,25 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
     return { season: seasonView(s), ...seasonStandings(s) };
   });
 
+  // ------------------------------------------------------------------ stats
+
+  on('GET', '/api/stats', () => {
+    const players = new Set();
+    let matches = 0;
+    let legs = 0;
+    for (const e of db.events) {
+      if (e.status === 'registration') continue;
+      e.entries.forEach((x) => x.players.forEach((p) => players.add(p)));
+      const all = [...(e.qualifying?.matches || []), ...(e.cups || []).flatMap((c) => c.matches)];
+      for (const m of all) {
+        if (m.bye || !m.winner) continue;
+        matches++;
+        legs += (m.legsA || 0) + (m.legsB || 0);
+      }
+    }
+    return { players: players.size, events: db.events.length, matches, legs, seasons: db.seasons.length };
+  });
+
   // ------------------------------------------------------------------ events
 
   on('GET', '/api/events', () =>
@@ -534,7 +656,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
 
   // Selbst anmelden (optional mit Partner im Doppel)
   on('POST', '/api/events/:id/register', (ctx) => {
-    const user = requireUser(ctx);
+    const user = requireApproved(ctx);
     const event = getEvent(ctx.params.id);
     const players = [user.id];
     if (event.mode === 'double' && ctx.body.partnerId) players.push(String(ctx.body.partnerId));
@@ -553,7 +675,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
 
   // Einem Team mit nur einem Spieler beitreten (Doppel)
   on('POST', '/api/events/:id/entries/:entryId/join', (ctx) => {
-    const user = requireUser(ctx);
+    const user = requireApproved(ctx);
     const event = getEvent(ctx.params.id);
     if (event.status !== 'registration') fail(400, 'Anmeldung ist geschlossen');
     const entry = event.entries.find((e) => e.id === ctx.params.entryId) || fail(404, 'Team nicht gefunden');
@@ -581,7 +703,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
   });
 
   on('PUT', '/api/events/:id/entries/:entryId', (ctx) => {
-    const user = requireUser(ctx);
+    const user = requireApproved(ctx);
     const event = getEvent(ctx.params.id);
     const entry = event.entries.find((e) => e.id === ctx.params.entryId) || fail(404, 'Anmeldung nicht gefunden');
     if (user.role !== 'admin' && !entry.players.includes(user.id)) fail(403, 'Keine Berechtigung');
@@ -638,7 +760,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
   });
 
   on('POST', '/api/events/:id/matches/:matchId/result', (ctx) => {
-    const user = requireUser(ctx);
+    const user = requireApproved(ctx);
     const event = getEvent(ctx.params.id);
     const { match, cup } = findMatch(event, ctx.params.matchId);
     const players = [match.a, match.b]
@@ -691,18 +813,39 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
 
   // ------------------------------------------------------------------ http
 
+  const publicRoot = publicDir ? path.resolve(publicDir) : null;
+
   function serveStatic(req, res, pathname) {
-    if (!publicDir) return false;
-    let file = path.normalize(path.join(publicDir, decodeURIComponent(pathname)));
-    if (!file.startsWith(path.resolve(publicDir))) return false;
-    if (pathname === '/' || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      file = path.join(publicDir, 'index.html');
+    if (!publicRoot) return false;
+    let rel;
+    try {
+      rel = decodeURIComponent(pathname);
+    } catch {
+      return false;
     }
+    let file = path.resolve(publicRoot, '.' + path.posix.normalize('/' + rel));
+    const inside = path.relative(publicRoot, file);
+    if (inside.startsWith('..') || path.isAbsolute(inside)) return false;
+    let isFile = false;
+    try {
+      isFile = fs.statSync(file).isFile();
+    } catch {
+      /* existiert nicht */
+    }
+    if (!isFile) {
+      // Unbekannte Pfade mit Dateiendung -> 404, sonst SPA-Einstieg
+      if (path.extname(rel)) return false;
+      file = path.join(publicRoot, 'index.html');
+    }
+    const ext = path.extname(file);
     res.writeHead(200, {
-      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-      'X-Content-Type-Options': 'nosniff',
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': ext === '.woff2' ? 'public, max-age=31536000, immutable' : 'no-cache',
     });
+    if (req.method === 'HEAD') {
+      res.end();
+      return true;
+    }
     fs.createReadStream(file).pipe(res);
     return true;
   }
@@ -713,7 +856,7 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
       const chunks = [];
       req.on('data', (c) => {
         size += c.length;
-        if (size > 1e6) {
+        if (size > MAX_BODY) {
           reject(new HttpError(413, 'Anfrage zu groß'));
           req.destroy();
         } else chunks.push(c);
@@ -723,52 +866,72 @@ function createApp(store, { publicDir, rng = Math.random } = {}) {
     });
   }
 
-  function send(res, status, body) {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  function send(res, status, body, headers = {}) {
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   }
 
   return async function handle(req, res) {
-    const url = new URL(req.url, 'http://localhost');
+    const https = isHttps(req, trustProxy);
+    securityHeaders(res, { https });
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      return send(res, 400, { error: 'Ungültige URL' });
+    }
     const pathname = url.pathname;
     try {
       if (!pathname.startsWith('/api/')) {
-        if (req.method === 'GET' && serveStatic(req, res, pathname)) return;
+        if ((req.method === 'GET' || req.method === 'HEAD') && serveStatic(req, res, pathname)) return;
         return send(res, 404, { error: 'Nicht gefunden' });
       }
       const route = routes.find((r) => r.method === req.method && r.re.test(pathname));
       if (!route) return send(res, 404, { error: 'Nicht gefunden' });
       const params = {};
       const m = pathname.match(route.re);
-      route.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
+      try {
+        route.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
+      } catch {
+        fail(400, 'Ungültige URL');
+      }
 
+      const ip = clientIp(req, trustProxy);
       let body = {};
       if (req.method !== 'GET') {
-        // Nur JSON akzeptieren (Schutz gegen CSRF über einfache Formulare)
+        // CSRF-Schutz: nur JSON (erzwingt CORS-Preflight) und nur von der eigenen Seite
         if (!(req.headers['content-type'] || '').startsWith('application/json')) {
           fail(415, 'Content-Type application/json erforderlich');
         }
+        if (!sameOrigin(req, trustProxy)) fail(403, 'Anfrage von fremder Seite abgelehnt');
+        if (limits.writes.blocked(ip)) fail(429, 'Zu viele Anfragen – bitte kurz warten');
+        limits.writes.hit(ip);
         const raw = await readBody(req);
         try {
           body = raw ? JSON.parse(raw) : {};
         } catch {
           fail(400, 'Ungültiges JSON');
         }
-        if (!body || typeof body !== 'object') body = {};
+        if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
       }
 
       const token = parseCookies(req.headers.cookie).sid;
-      const session = token && db.sessions.find((s) => s.token === token && s.expires > Date.now());
-      const user = session ? userById(session.userId) : null;
-      const ctx = { params, body, user, token, query: url.searchParams };
+      const sessionHash = token && /^[a-f0-9]{64}$/.test(token) ? hashToken(token) : null;
+      const session = sessionHash && db.sessions.find((s) => s.tokenHash === sessionHash && s.expires > Date.now());
+      const user = session ? userById(session.userId) || null : null;
+      const ctx = { params, body, user, sessionHash: session ? sessionHash : null, ip, https, query: url.searchParams };
 
       const result = await route.handler(ctx, res);
       if (req.method !== 'GET') store.save();
       send(res, 200, result);
     } catch (err) {
-      if (err instanceof HttpError) return send(res, err.status, { error: err.message });
+      if (err instanceof HttpError) {
+        if (res.headersSent) return res.end();
+        return send(res, err.status, { error: err.message });
+      }
       console.error(err);
-      send(res, 500, { error: 'Interner Fehler' });
+      if (!res.headersSent) send(res, 500, { error: 'Interner Fehler' });
+      else res.end();
     }
   };
 }

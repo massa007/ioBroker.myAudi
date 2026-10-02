@@ -6,12 +6,12 @@ const http = require('http');
 const { Store } = require('../src/store');
 const { createApp } = require('../src/app');
 
-function client(port) {
+function client(port, extraHeaders = {}) {
   let cookie = '';
   return async function call(method, path, body) {
     const res = await fetch(`http://127.0.0.1:${port}${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json', cookie },
+      headers: { 'Content-Type': 'application/json', cookie, ...extraHeaders },
       body: method === 'GET' ? undefined : JSON.stringify(body || {}),
     });
     const set = res.headers.get('set-cookie');
@@ -20,6 +20,7 @@ function client(port) {
     if (!res.ok) {
       const err = new Error(data.error);
       err.status = res.status;
+      err.headers = res.headers;
       throw err;
     }
     return data;
@@ -42,7 +43,7 @@ async function playAll(call, ev, stage) {
 
 test('Kompletter Turnierablauf über die API', async (t) => {
   const store = new Store(null);
-  const server = http.createServer(createApp(store));
+  const server = http.createServer(createApp(store, { setupToken: 'SETUP123' }));
   await new Promise((r) => server.listen(0, r));
   t.after(() => server.close());
   const port = server.address().port;
@@ -50,10 +51,18 @@ test('Kompletter Turnierablauf über die API', async (t) => {
   const admin = client(port);
   const player = client(port);
 
-  const reg = await admin('POST', '/api/register', { username: 'chef', name: 'Chef', password: 'geheim1' });
+  await assert.rejects(admin('POST', '/api/register', { username: 'chef', name: 'Chef', password: 'geheim123' }), { status: 403 });
+  const reg = await admin('POST', '/api/register', { username: 'chef', name: 'Chef', password: 'geheim123', setupCode: 'SETUP123' });
   assert.strictEqual(reg.user.role, 'admin');
-  const p = await player('POST', '/api/register', { username: 'paul', name: 'Paul', password: 'geheim2' });
+  const p = await player('POST', '/api/register', { username: 'paul', name: 'Paul', password: 'geheim234' });
   assert.strictEqual(p.user.role, 'player');
+  assert.strictEqual(p.approved, false);
+
+  // Nicht freigeschaltet: keine Anmeldung zu Terminen
+  const ev0 = await admin('POST', '/api/events', { name: 'Test' });
+  await assert.rejects(player('POST', `/api/events/${ev0.id}/register`), { status: 403 });
+  await admin('DELETE', `/api/events/${ev0.id}`);
+  await admin('PUT', `/api/users/${p.user.id}`, { approved: true });
 
   await assert.rejects(player('POST', '/api/seasons', { name: 'x' }), { status: 403 });
   const season = await admin('POST', '/api/seasons', { name: 'Season 1' });
@@ -117,4 +126,56 @@ test('Kompletter Turnierablauf über die API', async (t) => {
   const paul = st2.rows.find((r) => r.name === 'Paul');
   assert.ok(paul.double > 0 && paul.single > 0);
   assert.strictEqual(paul.events, 2);
+});
+
+test('Sicherheit: Header, Login-Drosselung, CSRF, Sessions', async (t) => {
+  const store = new Store(null);
+  const server = http.createServer(createApp(store, { setupToken: 'X', publicDir: require('path').join(__dirname, '..', 'public') }));
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+
+  const a = client(port);
+  await a('POST', '/api/register', { username: 'admin', name: 'A', password: 'langespasswort', setupCode: 'X' });
+
+  // Security-Header
+  const res = await fetch(`${base}/api/me`);
+  assert.match(res.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.strictEqual(res.headers.get('x-frame-options'), 'DENY');
+
+  // Session-Token wird nur gehasht gespeichert
+  assert.ok(store.data.sessions.every((s) => s.tokenHash && !s.token));
+
+  // Benutzernamen sind für andere Spieler unsichtbar
+  await a('PUT', '/api/settings', { requireApproval: false });
+  const b = client(port);
+  await b('POST', '/api/register', { username: 'bob', name: 'Bob', password: 'langespasswort' });
+  const seenByBob = await b('GET', '/api/users');
+  assert.strictEqual(seenByBob.find((u) => u.name === 'A').username, null);
+
+  // Fremde Origin wird abgelehnt
+  const evil = client(port, { Origin: 'https://evil.example' });
+  await assert.rejects(evil('POST', '/api/login', { username: 'admin', password: 'x' }), { status: 403 });
+
+  // Kein Formular-POST ohne JSON
+  const form = await fetch(`${base}/api/logout`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'a=b' });
+  assert.strictEqual(form.status, 415);
+
+  // Login-Drosselung nach 5 Fehlversuchen
+  const c = client(port);
+  for (let i = 0; i < 5; i++) {
+    await assert.rejects(c('POST', '/api/login', { username: 'admin', password: 'falsch' }), { status: 401 });
+  }
+  await assert.rejects(c('POST', '/api/login', { username: 'admin', password: 'langespasswort' }), { status: 429 });
+
+  // Registrierung kann geschlossen werden
+  await a('PUT', '/api/settings', { registrationOpen: false });
+  await assert.rejects(client(port)('POST', '/api/register', { username: 'zed', name: 'Z', password: 'langespasswort' }), { status: 403 });
+
+  // Path Traversal bei statischen Dateien
+  const trav = await fetch(`${base}/..%2f..%2fpackage.json`);
+  assert.strictEqual(trav.status, 404);
+  const idx = await fetch(`${base}/events/abc`);
+  assert.match(await idx.text(), /<!doctype html>/i);
 });

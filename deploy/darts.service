@@ -1,0 +1,43 @@
+[Unit]
+Description=Darts Turnierplaner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=darts
+Group=darts
+WorkingDirectory=/opt/darts/app
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=3
+
+# App lauscht nur lokal, Caddy (HTTPS) leitet weiter
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=TRUST_PROXY=1
+Environment=COOKIE_SECURE=1
+Environment=DATA_FILE=/opt/darts/data/db.json
+
+# --- Sandbox: der Dienst darf nur sein Datenverzeichnis beschreiben ---
+# Falls der Dienst im LXC mit "226/NAMESPACE" nicht startet: in Proxmox beim
+# Container unter Optionen -> Features "Nesting" aktivieren.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/darts/data
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

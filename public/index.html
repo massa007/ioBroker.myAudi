@@ -3,17 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#07080d" />
+    <meta name="description" content="Darts-Turniere im Einzel und Doppel planen: Anmeldung, Vorrunde, Pro-, Advanced- und Beginners-Cup, Season-Wertung." />
     <title>Darts Turnierplaner</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="fonts/inter.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header class="topbar">
+    <div class="progress" aria-hidden="true"></div>
+    <div class="bg-glow" aria-hidden="true"><span></span><span></span></div>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="topbar" id="topbar">
       <a class="brand" href="#/">
-        <img src="favicon.svg" alt="" width="28" height="28" />
+        <img src="favicon.svg" alt="" width="30" height="30" />
         <span>Darts Turnierplaner</span>
       </a>
-      <nav id="nav"></nav>
+      <button class="menu-toggle ghost" type="button" data-action="menu" aria-label="Menü öffnen" aria-expanded="false">☰</button>
+      <nav id="nav" aria-label="Hauptnavigation"></nav>
       <div id="userbox"></div>
     </header>
     <main id="app" class="container"><p class="muted">Lade…</p></main>

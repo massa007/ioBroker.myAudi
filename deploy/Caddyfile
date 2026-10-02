@@ -1,0 +1,18 @@
+# Caddy holt automatisch ein Let's-Encrypt-Zertifikat für die Domain.
+# Voraussetzung: Die Domain zeigt auf deine öffentliche IP und die Ports
+# 80 und 443 sind im Router auf diesen Container weitergeleitet.
+{$DARTS_DOMAIN} {
+	encode zstd gzip
+
+	# Nur die Anwendung ausliefern, keine Server-Kennung preisgeben
+	header -Server
+
+	reverse_proxy 127.0.0.1:3000
+
+	log {
+		output file /var/log/caddy/darts.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

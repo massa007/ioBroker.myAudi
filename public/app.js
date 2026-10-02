@@ -2,10 +2,23 @@
 
 /* ======================================================================
  * Darts Turnierplaner – Frontend (Vanilla JS, Hash-Routing)
+ * Alle dynamischen Inhalte laufen durch esc(); es gibt keine Inline-Styles
+ * oder Inline-Skripte, damit eine strenge Content-Security-Policy greift.
  * ==================================================================== */
 
 const $app = document.getElementById('app');
-const state = { me: null, needsSetup: false, users: null, event: null, refreshTimer: null };
+const state = {
+  me: null,
+  approved: true,
+  needsSetup: false,
+  registrationOpen: true,
+  users: null,
+  event: null,
+  season: null,
+  refreshTimer: null,
+  editing: null,
+  seasonFilter: 'points',
+};
 
 const STATUS_LABEL = {
   registration: 'Anmeldung offen',
@@ -16,6 +29,8 @@ const STATUS_LABEL = {
 const MODE_LABEL = { single: 'Einzel', double: 'Doppel' };
 const CUP_NAMES = { pro: 'Pro Cup', advanced: 'Advanced Cup', beginner: 'Beginners Cup' };
 const CATEGORY_LABEL = { winner: 'Sieger', final: 'Finalist', semi: 'Halbfinale', other: 'Ausgeschieden' };
+const MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---------------------------------------------------------------- utils
 
@@ -27,6 +42,23 @@ function fmtDate(d) {
   if (!d) return 'ohne Datum';
   const [y, m, day] = d.split('-');
   return day && m && y ? `${day}.${m}.${y}` : d;
+}
+
+function dateChip(d) {
+  const [, m, day] = (d || '').split('-');
+  if (!day) return `<div class="date-chip"><b>?</b><span>offen</span></div>`;
+  return `<div class="date-chip"><b>${esc(Number(day))}</b><span>${esc(MONTHS[Number(m) - 1] || '')}</span></div>`;
+}
+
+function initials(name) {
+  return esc(
+    String(name || '?')
+      .split(/[\s&]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0].toUpperCase())
+      .join('')
+  );
 }
 
 function toast(msg, isError = false) {
@@ -50,29 +82,80 @@ async function api(method, url, body) {
 }
 
 const isAdmin = () => state.me?.role === 'admin';
+const canPlay = () => !!state.me && state.approved;
 
 function formData(form) {
   const out = {};
   for (const el of form.elements) {
     if (!el.name) continue;
-    if (el.type === 'checkbox') out[el.name] = el.checked;
-    else out[el.name] = el.value;
+    out[el.name] = el.type === 'checkbox' ? el.checked : el.value;
   }
   return out;
 }
 
 function cupTag(key) {
-  return key ? `<span class="cup-tag cup-${esc(key)}">${esc(CUP_NAMES[key] || key)}</span>` : '–';
+  return key ? `<span class="cup-tag cup-${esc(key)}">${esc(CUP_NAMES[key] || key)}</span>` : '<span class="muted">–</span>';
 }
 
 function statusBadge(status) {
-  return `<span class="badge ${esc(status)}">${esc(STATUS_LABEL[status] || status)}</span>`;
+  const live = status === 'qualifying' || status === 'cups';
+  return `<span class="badge ${esc(status)}">${live ? '<i class="live-dot"></i>' : ''}${esc(STATUS_LABEL[status] || status)}</span>`;
 }
 
 async function loadUsers(force = false) {
   if (!state.me) return [];
   if (!state.users || force) state.users = await api('GET', '/api/users');
   return state.users;
+}
+
+// ---------------------------------------------------------------- dartscheibe (SVG)
+
+function dartboardSVG() {
+  const order = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+  const pt = (r, deg) => {
+    const a = ((deg - 90) * Math.PI) / 180;
+    return `${(r * Math.cos(a)).toFixed(2)} ${(r * Math.sin(a)).toFixed(2)}`;
+  };
+  const sector = (r1, r2, a1, a2) =>
+    `M${pt(r2, a1)} A${r2} ${r2} 0 0 1 ${pt(r2, a2)} L${pt(r1, a2)} A${r1} ${r1} 0 0 0 ${pt(r1, a1)}Z`;
+  let paths = '';
+  order.forEach((n, i) => {
+    const a1 = i * 18 - 9;
+    const a2 = a1 + 18;
+    const dark = i % 2 === 0;
+    const single = dark ? '#16130f' : '#efe3c4';
+    const ring = dark ? '#e0283f' : '#0f9d63';
+    paths += `<path d="${sector(16, 99, a1, a2)}" fill="${single}"/>`;
+    paths += `<path d="${sector(99, 107, a1, a2)}" fill="${ring}"/>`;
+    paths += `<path d="${sector(107, 162, a1, a2)}" fill="${single}"/>`;
+    paths += `<path d="${sector(162, 170, a1, a2)}" fill="${ring}"/>`;
+    const [x, y] = pt(186, i * 18).split(' ');
+    paths += `<text x="${x}" y="${y}" fill="#f3ead2" font-size="17" font-weight="700" text-anchor="middle" dominant-baseline="central" font-family="Space Grotesk, sans-serif">${n}</text>`;
+  });
+  const wires = order
+    .map((_, i) => `<line x1="${pt(16, i * 18 - 9).replace(' ', '" y1="')}" x2="${pt(170, i * 18 - 9).replace(' ', '" y2="')}"/>`)
+    .join('');
+  return `<svg viewBox="-205 -205 410 410" aria-hidden="true">
+    <circle r="204" fill="#0d0b09"/><circle r="200" fill="#1b1612"/>
+    ${paths}
+    <circle r="16" fill="#0f9d63"/><circle r="6.4" fill="#e0283f"/>
+    <g stroke="#c9c2b0" stroke-opacity=".55" stroke-width=".8" fill="none">
+      ${wires}<circle r="170"/><circle r="162"/><circle r="107"/><circle r="99"/><circle r="16"/><circle r="6.4"/>
+    </g>
+  </svg>`;
+}
+
+function dartSVG() {
+  return `<svg viewBox="0 0 300 40" aria-hidden="true">
+    <defs><linearGradient id="barrel" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f4f6fb"/><stop offset=".5" stop-color="#9aa3b5"/><stop offset="1" stop-color="#4b5263"/></linearGradient>
+    <linearGradient id="flight" x1="0" x2="1"><stop offset="0" stop-color="#ff3b5c"/><stop offset="1" stop-color="#ff7a59"/></linearGradient></defs>
+    <path d="M0 20 L34 17.5 L34 22.5Z" fill="#c9ced8"/>
+    <rect x="34" y="13" width="92" height="14" rx="6" fill="url(#barrel)"/>
+    <g stroke="#3b4150" stroke-width="1.2">${Array.from({ length: 9 }, (_, i) => `<line x1="${48 + i * 8}" y1="14" x2="${48 + i * 8}" y2="26"/>`).join('')}</g>
+    <rect x="126" y="17" width="96" height="6" rx="3" fill="#20242e"/>
+    <path d="M210 20 L268 1 L298 3 L254 20 L298 37 L268 39Z" fill="url(#flight)"/>
+    <path d="M210 20 L298 20" stroke="#fff" stroke-opacity=".5"/>
+  </svg>`;
 }
 
 // ---------------------------------------------------------------- chrome
@@ -92,79 +175,137 @@ function renderChrome() {
     })
     .join('');
   document.getElementById('userbox').innerHTML = state.me
-    ? `<a href="#/profile">${esc(state.me.name)}${isAdmin() ? '<span class="badge admin">Admin</span>' : ''}</a>
+    ? `<a href="#/profile">${esc(state.me.name)} ${isAdmin() ? '<span class="badge admin">Admin</span>' : ''}</a>
        <a href="#" data-action="logout">Abmelden</a>`
-    : `<a href="#/login">Anmelden</a><a href="#/register">Registrieren</a>`;
+    : `<a href="#/login">Anmelden</a>${state.registrationOpen || state.needsSetup ? '<a class="btn primary" href="#/register">Registrieren</a>' : ''}`;
+  document.getElementById('topbar').classList.remove('open');
 }
 
-// ---------------------------------------------------------------- views
+function pendingNotice() {
+  if (state.me && !state.approved) {
+    return `<div class="notice">⏳ <span>Dein Account wartet noch auf die Freischaltung durch einen Admin. Bis dahin kannst du dich nicht zu Terminen anmelden.</span></div>`;
+  }
+  return '';
+}
+
+// ---------------------------------------------------------------- startseite
 
 async function viewHome() {
-  const [events, seasons] = await Promise.all([api('GET', '/api/events'), api('GET', '/api/seasons')]);
+  const [events, seasons, stats] = await Promise.all([api('GET', '/api/events'), api('GET', '/api/seasons'), api('GET', '/api/stats')]);
   const active = seasons.find((s) => s.active);
-  const standings = active ? await api('GET', `/api/seasons/${active.id}/standings`) : null;
-  const upcoming = events.filter((e) => e.status !== 'finished').sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  const finished = events.filter((e) => e.status === 'finished').slice(0, 4);
+  const standings = active ? await api('GET', `/api/seasons/${encodeURIComponent(active.id)}/standings`) : null;
+  const upcoming = events.filter((e) => e.status !== 'finished').sort((a, b) => (a.date || '9').localeCompare(b.date || '9'));
+  const finished = events.filter((e) => e.status === 'finished').slice(0, 6);
+  const live = upcoming.find((e) => e.status === 'qualifying' || e.status === 'cups');
+
+  const cta = state.me
+    ? `${upcoming[0] ? `<a class="btn primary lg" href="#/events/${esc(upcoming[0].id)}">${live ? 'Zum Live-Turnier' : 'Zum nächsten Termin'} →</a>` : ''}
+       ${active ? `<a class="btn lg" href="#/seasons/${esc(active.id)}">Season-Tabelle</a>` : ''}`
+    : `${state.registrationOpen || state.needsSetup ? '<a class="btn primary lg" href="#/register">Jetzt mitspielen →</a>' : ''}
+       <a class="btn lg" href="#/events">Termine ansehen</a>`;
 
   return `
-    ${state.needsSetup ? `<div class="notice"><strong>Willkommen!</strong> Es gibt noch keinen Account. Der erste registrierte Benutzer wird automatisch Administrator. <a href="#/register">Jetzt registrieren</a></div>` : ''}
-    <h1>Übersicht</h1>
-    <div class="grid">
-      <section class="card">
-        <div class="spread"><h2>${active ? esc(active.name) : 'Keine aktive Season'}</h2>${active ? `<a href="#/seasons/${active.id}">Tabelle →</a>` : ''}</div>
-        ${
-          standings && standings.rows.length
-            ? `<table><tbody>${standings.rows
-                .slice(0, 8)
-                .map((r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank">${r.rank}.</td><td>${esc(r.name)}</td><td class="num"><strong>${r.points}</strong> P.</td></tr>`)
-                .join('')}</tbody></table>`
-            : `<p class="muted">${active ? 'Noch keine abgeschlossenen Termine.' : isAdmin() ? '<a href="#/seasons">Season anlegen</a>' : 'Der Admin hat noch keine Season angelegt.'}</p>`
-        }
-      </section>
-      <section class="card">
-        <div class="spread"><h2>Nächste Termine</h2><a href="#/events">Alle →</a></div>
-        ${upcoming.length ? `<div class="stack">${upcoming.slice(0, 5).map(eventLine).join('')}</div>` : '<p class="muted">Keine anstehenden Termine.</p>'}
-      </section>
-      <section class="card">
-        <h2>Letzte Sieger</h2>
-        ${
-          finished.length
-            ? `<div class="stack">${finished
-                .map(
-                  (e) => `<div><a href="#/events/${e.id}"><strong>${esc(e.name)}</strong></a> <span class="muted small">${fmtDate(e.date)}</span>
-                    <div class="small">${e.winners.map((w) => `🏆 ${esc(w.cup)}: <strong>${esc(w.name)}</strong>`).join('<br>')}</div></div>`
-                )
-                .join('')}</div>`
-            : '<p class="muted">Noch keine Ergebnisse.</p>'
-        }
-      </section>
-    </div>`;
+    ${state.needsSetup ? `<div class="notice info">🛠 <span><strong>Ersteinrichtung:</strong> Noch kein Admin vorhanden. Registriere dich mit dem <em>Setup-Code</em> aus dem Server-Log, um Administrator zu werden.</span> <a class="btn small" href="#/register">Einrichten</a></div>` : ''}
+    ${pendingNotice()}
+    <section class="hero">
+      <div>
+        <span class="eyebrow reveal">${live ? '<i class="live-dot cup-advanced"></i> Live: ' + esc(live.name) : '🎯 ' + esc(active ? active.name : 'Darts Liga')}</span>
+        <h1 class="reveal" data-i="1">Jeder Pfeil <span class="gradient-text">zählt.</span></h1>
+        <p class="lead reveal" data-i="2">Einzel und Doppel, Vorrunde mit fünf Spielen, danach Pro-, Advanced- und Beginners-Cup im Doppel-K.o. – und jeder Abend bringt Punkte für die Season.</p>
+        <div class="row reveal" data-i="3">${cta}</div>
+        <div class="stats reveal" data-i="4">
+          <div class="stat"><b data-count="${Number(stats.players) || 0}">0</b><span>Spieler</span></div>
+          <div class="stat"><b data-count="${Number(stats.matches) || 0}">0</b><span>Spiele</span></div>
+          <div class="stat"><b data-count="${Number(stats.legs) || 0}">0</b><span>Legs</span></div>
+        </div>
+      </div>
+      <div class="board-stage" id="board-stage">
+        <div class="orbit"></div>
+        <div class="board-3d" id="board">
+          <div class="board-shadow"></div>
+          ${Array.from({ length: 6 }, (_, i) => `<div class="layer rim" data-z="${i * 3}"></div>`).join('')}
+          <div class="layer face">${dartboardSVG()}</div>
+          <div class="layer shine"></div>
+          <div class="dart">${dartSVG()}</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-head"><div><span class="eyebrow reveal">Kalender</span><h2 class="reveal">Nächste Termine</h2></div><a class="reveal" href="#/events">Alle Termine →</a></div>
+    ${
+      upcoming.length
+        ? `<div class="grid">${upcoming.slice(0, 6).map((e, i) => eventCard(e, i)).join('')}</div>`
+        : `<div class="card empty reveal"><div class="big">📅</div>Aktuell sind keine Termine geplant.</div>`
+    }
+
+    ${
+      active
+        ? `<div class="section-head"><div><span class="eyebrow reveal">${esc(active.name)}</span><h2 class="reveal">Season-Ranking</h2></div><a class="reveal" href="#/seasons/${esc(active.id)}">Komplette Tabelle →</a></div>
+           ${standings && standings.rows.length ? rankingBlock(standings.rows, 8) : `<div class="card empty reveal"><div class="big">🏆</div>Sobald der erste Termin abgeschlossen ist, erscheint hier das Ranking.</div>`}`
+        : ''
+    }
+
+    <div class="section-head"><div><span class="eyebrow reveal">Turniermodus</span><h2 class="reveal">So läuft ein Dartsabend</h2></div></div>
+    <div class="howto">
+      <div class="card tilt reveal-flip" data-i="0"><div class="num lift">01</div><h3>Vorrunde</h3><p>Jeder spielt 5 Partien gegen zufällig geloste Gegner. Siege und Leg-Differenz entscheiden über die Tabelle.</p></div>
+      <div class="card tilt reveal-flip" data-i="1"><div class="num lift">02</div><h3>Drei Cups</h3><p>Das obere Drittel spielt im Pro Cup, die Mitte im Advanced Cup, der Rest im Beginners Cup.</p>
+        <div class="cup-pills"><span class="badge cup-pro">Pro</span><span class="badge cup-advanced">Advanced</span><span class="badge cup-beginner">Beginners</span></div></div>
+      <div class="card tilt reveal-flip" data-i="2"><div class="num lift">03</div><h3>Zweite Chance</h3><p>Wer einmal verliert, rutscht ins Losers Bracket und kann sich von dort noch ins Halbfinale kämpfen.</p></div>
+      <div class="card tilt reveal-flip" data-i="3"><div class="num lift">04</div><h3>K.o.-Finals</h3><p>Ab dem Halbfinale zählt nur noch der Sieg. Platzierungen bringen Punkte für die Season-Wertung.</p></div>
+    </div>
+
+    ${
+      finished.length
+        ? `<div class="section-head"><div><span class="eyebrow reveal">Hall of Fame</span><h2 class="reveal">Letzte Sieger</h2></div></div>
+           <div class="grid">${finished.map((e, i) => eventCard(e, i)).join('')}</div>`
+        : ''
+    }`;
 }
 
-function eventLine(e) {
-  return `<div class="spread"><div><a href="#/events/${e.id}"><strong>${esc(e.name)}</strong></a>
-    <div class="muted small">${fmtDate(e.date)} · ${MODE_LABEL[e.mode]} · ${e.entryCount}${e.maxEntries ? '/' + e.maxEntries : ''} ${e.mode === 'double' ? 'Teams' : 'Spieler'}</div></div>${statusBadge(e.status)}</div>`;
+function rankingBlock(rows, limit) {
+  const top = rows.slice(0, 3);
+  const maxPts = Math.max(1, ...rows.map((r) => r.points));
+  const order = [top[1], top[0], top[2]];
+  const cls = ['p2', 'p1', 'p3'];
+  return `<div class="grid-2">
+    <div class="card reveal">
+      <div class="podium reveal-rise">${order
+        .map((r, i) =>
+          r
+            ? `<div class="place ${cls[i]}"><div class="who">${esc(r.name)}<small>${esc(r.points)} Punkte</small></div><div class="block">${cls[i].slice(1)}</div></div>`
+            : `<div class="place ${cls[i]}"></div>`
+        )
+        .join('')}</div>
+    </div>
+    <div class="card reveal" data-i="1"><div class="table-wrap"><table><tbody>${rows
+      .slice(0, limit)
+      .map(
+        (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td>${esc(r.name)}</td>
+          <td class="bar-cell"><div class="bar"><i data-w="${Math.round((r.points / maxPts) * 100)}"></i></div></td><td class="num"><strong>${esc(r.points)}</strong></td></tr>`
+      )
+      .join('')}</tbody></table></div></div>
+  </div>`;
 }
+
+function eventCard(e, i = 0) {
+  const unit = e.mode === 'double' ? 'Teams' : 'Spieler';
+  return `<a class="card event-card tilt reveal" data-i="${i % 6}" href="#/events/${esc(e.id)}">
+    <div class="spread lift">${dateChip(e.date)}${statusBadge(e.status)}</div>
+    <h3 class="lift">${esc(e.name)}</h3>
+    <div class="meta-line"><span>${esc(MODE_LABEL[e.mode])}</span><span>${esc(e.entryCount)}${e.maxEntries ? ' / ' + esc(e.maxEntries) : ''} ${unit}</span>${e.location ? `<span>📍 ${esc(e.location)}</span>` : ''}</div>
+    ${e.winners.length ? `<div class="winners small">${e.winners.map((w) => `<div>🏆 <strong>${esc(w.name)}</strong> <span class="muted">${esc(w.cup)}</span></div>`).join('')}</div>` : ''}
+  </a>`;
+}
+
+// ---------------------------------------------------------------- termine
 
 async function viewEvents() {
   const [events, seasons] = await Promise.all([api('GET', '/api/events'), api('GET', '/api/seasons')]);
   return `
-    <div class="spread"><h1>Termine</h1></div>
-    ${isAdmin() ? `<details class="card"><summary>+ Neuer Termin</summary><div style="margin-top:12px">${eventForm(null, seasons)}</div></details>` : ''}
-    ${
-      events.length
-        ? `<div class="grid">${events
-            .map(
-              (e) => `<a class="card event-card" href="#/events/${e.id}">
-                <div class="spread"><h3>${esc(e.name)}</h3>${statusBadge(e.status)}</div>
-                <div class="muted small">${fmtDate(e.date)}${e.location ? ' · ' + esc(e.location) : ''}</div>
-                <div class="small">${MODE_LABEL[e.mode]} · ${e.entryCount}${e.maxEntries ? '/' + e.maxEntries : ''} ${e.mode === 'double' ? 'Teams' : 'Spieler'}${e.seasonName ? ' · ' + esc(e.seasonName) : ''}</div>
-                ${e.winners.length ? `<div class="small" style="margin-top:6px">${e.winners.map((w) => `🏆 ${esc(w.name)} <span class="muted">(${esc(w.cup)})</span>`).join('<br>')}</div>` : ''}
-              </a>`
-            )
-            .join('')}</div>`
-        : '<p class="muted">Noch keine Termine angelegt.</p>'
-    }`;
+    <div class="page-head"><span class="eyebrow reveal">Kalender</span><h1 class="reveal">Termine</h1></div>
+    ${pendingNotice()}
+    ${isAdmin() ? `<details class="card reveal"><summary>Neuen Termin anlegen</summary><div>${eventForm(null, seasons)}</div></details>` : ''}
+    ${events.length ? `<div class="grid">${events.map((e, i) => eventCard(e, i)).join('')}</div>` : '<div class="card empty"><div class="big">📅</div>Noch keine Termine angelegt.</div>'}`;
 }
 
 function eventForm(ev, seasons) {
@@ -180,7 +321,7 @@ function eventForm(ev, seasons) {
     <div><label>Datum</label><input type="date" name="date" value="${esc(v.date || '')}"></div>
     <div><label>Ort</label><input name="location" maxlength="100" value="${esc(v.location || '')}"></div>
     <div><label>Season</label><select name="seasonId"><option value="">– keine –</option>${seasons
-      .map((s) => `<option value="${s.id}" ${s.id === v.seasonId ? 'selected' : ''}>${esc(s.name)}</option>`)
+      .map((s) => `<option value="${esc(s.id)}" ${s.id === v.seasonId ? 'selected' : ''}>${esc(s.name)}</option>`)
       .join('')}</select></div>
     <div><label>Modus</label><select name="mode" ${lockMode ? 'disabled' : ''}>
       <option value="single" ${v.mode === 'single' ? 'selected' : ''}>Einzel</option>
@@ -211,7 +352,7 @@ function eventPayload(f) {
   return p;
 }
 
-// ---------------------------------------------------------------- event detail
+// ---------------------------------------------------------------- termin-details
 
 const TABS = [
   ['entries', 'Teilnehmer'],
@@ -225,7 +366,7 @@ function defaultTab(ev) {
 }
 
 async function viewEvent(id, tab) {
-  const ev = await api('GET', `/api/events/${id}`);
+  const ev = await api('GET', `/api/events/${encodeURIComponent(id)}`);
   state.event = ev;
   if (state.me) await loadUsers();
   tab = tab || defaultTab(ev);
@@ -242,15 +383,16 @@ async function viewEvent(id, tab) {
   else if (tab === 'settings' && isAdmin()) body = `<div class="card">${eventForm(ev, await api('GET', '/api/seasons'))}</div>${adminResetBox(ev)}`;
 
   return `
-    <div class="spread">
-      <div><h1>${esc(ev.name)}</h1>
-        <div class="muted">${fmtDate(ev.date)}${ev.location ? ' · ' + esc(ev.location) : ''} · ${MODE_LABEL[ev.mode]}${ev.seasonName ? ` · <a href="#/seasons/${ev.seasonId}">${esc(ev.seasonName)}</a>` : ''}</div>
-      </div>${statusBadge(ev.status)}
+    <div class="page-head">
+      <div class="spread"><span class="eyebrow">${esc(MODE_LABEL[ev.mode])}${ev.seasonName ? ` · <a href="#/seasons/${esc(ev.seasonId)}">${esc(ev.seasonName)}</a>` : ''}</span>${statusBadge(ev.status)}</div>
+      <h1>${esc(ev.name)}</h1>
+      <div class="meta-line"><span>📅 ${esc(fmtDate(ev.date))}</span>${ev.location ? `<span>📍 ${esc(ev.location)}</span>` : ''}<span>👥 ${esc(ev.entries.length)}${ev.maxEntries ? ' / ' + esc(ev.maxEntries) : ''} ${ev.mode === 'double' ? 'Teams' : 'Spieler'}</span></div>
+      ${ev.notes ? `<p class="muted">${esc(ev.notes)}</p>` : ''}
     </div>
-    ${ev.notes ? `<p>${esc(ev.notes)}</p>` : ''}
-    <div class="steps">${steps.map((s, i) => `<span class="${i < cur ? 'done' : i === cur ? 'current' : ''}">${i < cur ? '✓ ' : ''}${STATUS_LABEL[s]}</span>`).join('')}</div>
-    <nav class="tabs">${TABS.map(([k, l]) => `<a href="#/events/${ev.id}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}
-      ${isAdmin() ? `<a href="#/events/${ev.id}/settings" class="${tab === 'settings' ? 'active' : ''}">⚙ Einstellungen</a>` : ''}</nav>
+    <div class="steps" data-step="${cur}">${steps.map((s, i) => `<span class="${i < cur || ev.status === 'finished' ? 'done' : i === cur ? 'current' : ''}">${STATUS_LABEL[s]}</span>`).join('')}</div>
+    <nav class="tabs">${TABS.map(([k, l]) => `<a href="#/events/${esc(ev.id)}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}
+      ${isAdmin() ? `<a href="#/events/${esc(ev.id)}/settings" class="${tab === 'settings' ? 'active' : ''}">⚙ Einstellungen</a>` : ''}</nav>
+    ${pendingNotice()}
     ${body}`;
 }
 
@@ -266,75 +408,72 @@ async function tabEntries(ev) {
   const unit = ev.mode === 'double' ? 'Teams' : 'Spieler';
   const users = state.me ? await loadUsers() : [];
   const registered = new Set(ev.entries.flatMap((e) => e.players.map((p) => p.id)));
-  const free = users.filter((u) => !registered.has(u.id));
+  const free = users.filter((u) => !registered.has(u.id) && u.approved);
   const open = ev.status === 'registration';
   const full = ev.maxEntries && ev.entries.length >= ev.maxEntries;
   const solos = ev.entries.filter((e) => !e.complete);
+  const opt = (u) => `<option value="${esc(u.id)}">${esc(u.name)}${u.guest ? ' (Gast)' : ''}</option>`;
 
   let myBox = '';
-  if (open && state.me) {
+  if (open && state.me && state.approved) {
     if (ev.myEntryId) {
       const mine = ev.entries.find((e) => e.id === ev.myEntryId);
-      myBox = `<div class="card"><div class="spread"><div>✅ Du bist angemeldet${ev.mode === 'double' ? ` als <strong>${esc(mine.name)}</strong>${mine.complete ? '' : ' – <em>Partner gesucht</em>'}` : ''}.</div>
-        <button class="danger" data-action="entry-remove" data-entry="${mine.id}">Abmelden</button></div>
-        ${ev.mode === 'double' && mine.complete ? `<form data-form="team-name" data-entry="${mine.id}" class="row" style="margin-top:10px"><input name="teamName" maxlength="60" placeholder="Teamname (optional)" value="${esc(mine.teamName)}" style="max-width:260px"><button>Speichern</button></form>` : ''}</div>`;
+      myBox = `<div class="card reveal"><div class="spread"><div>✅ Du bist angemeldet${ev.mode === 'double' ? ` als <strong>${esc(mine.name)}</strong>${mine.complete ? '' : ' – <em>Partner gesucht</em>'}` : ''}.</div>
+        <button class="danger" data-action="entry-remove" data-entry="${esc(mine.id)}">Abmelden</button></div>
+        ${ev.mode === 'double' && mine.complete ? `<form data-form="team-name" data-entry="${esc(mine.id)}" class="row mt"><input class="narrow" name="teamName" maxlength="60" placeholder="Teamname (optional)" value="${esc(mine.teamName)}"><button>Speichern</button></form>` : ''}</div>`;
     } else if (full) {
       myBox = `<div class="notice">Dieser Termin ist ausgebucht.</div>`;
     } else if (ev.mode === 'single') {
-      myBox = `<div class="card"><div class="spread"><div>Du bist noch nicht angemeldet.</div><button class="primary" data-action="register-self">Jetzt anmelden</button></div></div>`;
+      myBox = `<div class="card reveal"><div class="spread"><div><h3>Bist du dabei?</h3><span class="muted">Melde dich mit einem Klick an.</span></div><button class="primary" data-action="register-self">Jetzt anmelden</button></div></div>`;
     } else {
-      myBox = `<div class="card"><h3>Für das Doppel anmelden</h3>
+      myBox = `<div class="card reveal"><h3>Für das Doppel anmelden</h3>
         <form data-form="register-double" class="form-grid">
-          <div><label>Partner</label><select name="partnerId"><option value="">– Partner gesucht –</option>${free
-            .filter((u) => u.id !== state.me.id)
-            .map((u) => `<option value="${u.id}">${esc(u.name)}</option>`)
-            .join('')}</select></div>
+          <div><label>Partner</label><select name="partnerId"><option value="">– Partner gesucht –</option>${free.filter((u) => u.id !== state.me.id).map(opt).join('')}</select></div>
           <div><label>Teamname (optional)</label><input name="teamName" maxlength="60"></div>
-          <div style="align-self:end"><button class="primary">Anmelden</button></div>
+          <div class="end"><button class="primary">Anmelden</button></div>
         </form>
-        ${solos.length ? `<p class="small muted" style="margin-top:12px">Oder einem Spieler ohne Partner beitreten:</p><div class="row">${solos.map((s) => `<button class="small" data-action="join-entry" data-entry="${s.id}">Mit ${esc(s.name)} spielen</button>`).join('')}</div>` : ''}
+        ${solos.length ? `<p class="small muted mt">Oder einem Spieler ohne Partner beitreten:</p><div class="row">${solos.map((s) => `<button class="small" data-action="join-entry" data-entry="${esc(s.id)}">Mit ${esc(s.name)} spielen</button>`).join('')}</div>` : ''}
       </div>`;
     }
   } else if (open && !state.me) {
-    myBox = `<div class="notice"><a href="#/login">Melde dich an</a> oder <a href="#/register">registriere dich</a>, um teilzunehmen.</div>`;
+    myBox = `<div class="notice info">🎯 <span><a href="#/login">Melde dich an</a> oder <a href="#/register">registriere dich</a>, um teilzunehmen.</span></div>`;
   }
 
   const adminBox =
     isAdmin() && open
-      ? `<div class="card"><h3>Admin: Teilnehmer verwalten</h3>
+      ? `<details class="card reveal" open><summary>Admin: Teilnehmer verwalten</summary><div>
         <form data-form="admin-add-entry" class="form-grid">
-          <div><label>Spieler${ev.mode === 'double' ? ' 1' : ''}</label><select name="p1" required><option value="">– wählen –</option>${free.map((u) => `<option value="${u.id}">${esc(u.name)}${u.guest ? ' (Gast)' : ''}</option>`).join('')}</select></div>
-          ${ev.mode === 'double' ? `<div><label>Spieler 2 (optional)</label><select name="p2"><option value="">– Partner gesucht –</option>${free.map((u) => `<option value="${u.id}">${esc(u.name)}${u.guest ? ' (Gast)' : ''}</option>`).join('')}</select></div>` : ''}
-          <div style="align-self:end"><button>Eintragen</button></div>
+          <div><label>Spieler${ev.mode === 'double' ? ' 1' : ''}</label><select name="p1" required><option value="">– wählen –</option>${free.map(opt).join('')}</select></div>
+          ${ev.mode === 'double' ? `<div><label>Spieler 2 (optional)</label><select name="p2"><option value="">– Partner gesucht –</option>${free.map(opt).join('')}</select></div>` : ''}
+          <div class="end"><button>Eintragen</button></div>
         </form>
-        <form data-form="guest-add" class="row" style="margin-top:12px">
-          <input name="name" placeholder="Neuer Gastspieler (ohne Account)" maxlength="60" required style="max-width:280px">
+        <form data-form="guest-add" class="row mt">
+          <input class="narrow" name="name" placeholder="Neuer Gastspieler (ohne Account)" maxlength="60" required>
           <label class="checkbox"><input type="checkbox" name="register" checked> direkt eintragen</label>
           <button>Gast anlegen</button>
         </form>
-        <div class="row" style="margin-top:16px">
+        <div class="row mt-lg">
           ${ev.mode === 'double' && solos.length > 1 ? `<button data-action="pair-solos">🎲 Einzelspieler zu Teams auslosen (${solos.length})</button>` : ''}
-          <button class="primary" data-action="start-qualifying" ${ev.entries.length < 2 || solos.length ? 'disabled' : ''}>▶ Vorrunde starten (${ev.qualiRounds} Spiele je ${ev.mode === 'double' ? 'Team' : 'Spieler'})</button>
+          <button class="primary" data-action="start-qualifying" ${ev.entries.length < 2 || solos.length ? 'disabled' : ''}>▶ Vorrunde starten (${esc(ev.qualiRounds)} Spiele je ${ev.mode === 'double' ? 'Team' : 'Spieler'})</button>
         </div>
         ${solos.length ? `<p class="small muted">Vor dem Start müssen alle Teams vollständig sein.</p>` : ''}
-      </div>`
+      </div></details>`
       : '';
 
   return `${myBox}${adminBox}
-    <div class="card"><h2>${ev.entries.length}${ev.maxEntries ? ' / ' + ev.maxEntries : ''} ${unit}</h2>
-      ${
-        ev.entries.length
-          ? `<ul class="entry-list">${ev.entries
-              .map(
-                (e, i) => `<li><span><span class="muted">${i + 1}.</span> <strong>${esc(e.name)}</strong>
-                  ${ev.mode === 'double' && e.teamName ? `<span class="muted small">(${e.players.map((p) => esc(p.name)).join(' & ')})</span>` : ''}
-                  ${!e.complete ? '<span class="badge">Partner gesucht</span>' : ''}</span>
-                  ${isAdmin() && open && e.id !== ev.myEntryId ? `<button class="small danger" data-action="entry-remove" data-entry="${e.id}">Entfernen</button>` : ''}</li>`
-              )
-              .join('')}</ul>`
-          : '<p class="muted">Noch keine Anmeldungen.</p>'
-      }
-    </div>`;
+    <div class="section-head"><h2>${esc(ev.entries.length)}${ev.maxEntries ? ' / ' + esc(ev.maxEntries) : ''} ${unit}</h2></div>
+    ${
+      ev.entries.length
+        ? `<ul class="entry-list">${ev.entries
+            .map(
+              (e, i) => `<li class="reveal" data-i="${i % 8}"><span class="who"><span class="avatar">${initials(e.name)}</span><span><strong>${esc(e.name)}</strong>
+                ${ev.mode === 'double' && e.teamName ? `<br><span class="muted small">${e.players.map((p) => esc(p.name)).join(' & ')}</span>` : ''}</span></span>
+                ${!e.complete ? '<span class="badge warn">Partner gesucht</span>' : ''}
+                ${isAdmin() && open && e.id !== ev.myEntryId ? `<button class="small danger" data-action="entry-remove" data-entry="${esc(e.id)}" aria-label="Entfernen">✕</button>` : ''}</li>`
+            )
+            .join('')}</ul>`
+        : '<div class="card empty"><div class="big">🎯</div>Noch keine Anmeldungen – sei der Erste!</div>'
+    }`;
 }
 
 function matchCard(ev, m, names, opts = {}) {
@@ -342,34 +481,41 @@ function matchCard(ev, m, names, opts = {}) {
   const nameB = m.bye ? 'Freilos' : names[m.b] || '?';
   const done = !!m.winner;
   const mine = isMyEntry(ev, m.a) || isMyEntry(ev, m.b);
-  const canEdit = m.editable && state.me && (isAdmin() || mine);
+  const canEdit = m.editable && canPlay() && (isAdmin() || mine);
   const sideCls = (id) => (!done ? '' : m.winner === id ? 'win' : 'lose');
   const stageLabel = { Q: `Runde ${m.round}`, W: 'Winners', L: 'Losers', SF: 'Halbfinale', F: 'Finale' }[m.stage];
+  const max = Math.ceil(m.bestOf / 2);
   const form =
-    canEdit && (!done || opts.editing === m.id)
-      ? `<form class="result-form" data-form="result" data-match="${m.id}">
-          <input type="number" name="legsA" min="0" max="${Math.ceil(m.bestOf / 2)}" value="${done ? m.legsA : ''}" aria-label="Legs ${esc(nameA)}" required>
+    canEdit && (!done || state.editing === m.id)
+      ? `<form class="result-form" data-form="result" data-match="${esc(m.id)}">
+          <input type="number" name="legsA" min="0" max="${max}" value="${done ? esc(m.legsA) : ''}" aria-label="Legs ${esc(nameA)}" required>
           <span>:</span>
-          <input type="number" name="legsB" min="0" max="${Math.ceil(m.bestOf / 2)}" value="${done ? m.legsB : ''}" aria-label="Legs ${esc(nameB)}" required>
-          <button class="small primary">✓</button>
+          <input type="number" name="legsB" min="0" max="${max}" value="${done ? esc(m.legsB) : ''}" aria-label="Legs ${esc(nameB)}" required>
+          <button class="small primary" aria-label="Ergebnis speichern">✓</button>
         </form>`
       : '';
   return `<div class="match ${done ? 'done' : 'open'} ${m.bye ? 'bye' : ''} ${mine ? 'mine' : ''}">
-    <div class="meta"><span>${opts.label || stageLabel}${m.bye ? '' : ` · Bo${m.bestOf}`}</span>
-      ${canEdit && done && opts.editing !== m.id ? `<button class="small" data-action="edit-result" data-match="${m.id}">Ändern</button>` : ''}</div>
-    <div class="side ${sideCls(m.a)}"><span>${esc(nameA)}</span><span class="legs">${done && !m.bye ? m.legsA : ''}</span></div>
-    <div class="side ${m.bye ? '' : sideCls(m.b)}"><span>${esc(nameB)}</span><span class="legs">${done && !m.bye ? m.legsB : ''}</span></div>
+    <div class="meta"><span>${esc(opts.label || stageLabel)}${m.bye ? '' : ` · Bo${esc(m.bestOf)}`}</span>
+      ${canEdit && done && state.editing !== m.id ? `<button class="small ghost" data-action="edit-result" data-match="${esc(m.id)}">Ändern</button>` : ''}</div>
+    <div class="side ${sideCls(m.a)}"><span>${esc(nameA)}</span><span class="legs">${done && !m.bye ? esc(m.legsA) : ''}</span></div>
+    <div class="side ${m.bye ? '' : sideCls(m.b)}"><span>${esc(nameB)}</span><span class="legs">${done && !m.bye ? esc(m.legsB) : ''}</span></div>
     ${form}
   </div>`;
 }
 
+function previewCupSizes(n, k) {
+  k = Math.max(1, Math.min(k, 3, Math.max(1, Math.floor(n / 2))));
+  const base = Math.floor(n / k);
+  const rem = n % k;
+  return Array.from({ length: k }, (_, i) => base + (i < rem ? 1 : 0));
+}
+
 function tabQualifying(ev, names) {
-  if (!ev.qualifying) return `<p class="muted">Die Vorrunde wurde noch nicht gestartet.</p>`;
+  if (!ev.qualifying) return `<div class="card empty"><div class="big">⏳</div>Die Vorrunde wurde noch nicht gestartet.</div>`;
   const q = ev.qualifying;
   const rounds = [...new Set(q.matches.map((m) => m.round))].sort((a, b) => a - b);
   const openCount = q.matches.filter((m) => !m.winner).length;
-  const n = ev.entries.length;
-  const preview = previewCupSizes(n, ev.numCups || ev.defaultCupCount);
+  const preview = previewCupSizes(ev.entries.length, ev.numCups || ev.defaultCupCount);
   const cuts = new Set();
   let acc = 0;
   preview.forEach((s, i) => {
@@ -386,30 +532,29 @@ function tabQualifying(ev, names) {
 
   const adminBox =
     isAdmin() && ev.status === 'qualifying'
-      ? `<div class="card"><h3>Admin: Cups starten</h3>
+      ? `<div class="card reveal"><div class="spread"><div><h3>Cups auslosen</h3><span class="small muted">Oberes Drittel → Pro, mittleres → Advanced, unteres → Beginners.</span></div>
         <form data-form="start-cups" class="row">
-          <label class="checkbox">Anzahl Cups:
-            <select name="numCups" style="width:auto">${[1, 2, 3]
+          <label class="checkbox">Cups
+            <select name="numCups" class="auto">${[1, 2, 3]
               .filter((k) => k <= ev.maxCupCount)
               .map((k) => `<option value="${k}" ${k === ev.defaultCupCount ? 'selected' : ''}>${k}</option>`)
               .join('')}</select></label>
-          <button class="primary" ${openCount ? 'disabled' : ''}>▶ Cups auslosen</button>
-          ${openCount ? `<span class="muted small">Noch ${openCount} offene Spiele</span>` : ''}
-        </form>
-        <p class="small muted">Oberes Drittel → Pro Cup, mittleres → Advanced Cup, unteres → Beginners Cup.</p></div>`
+          <button class="primary" ${openCount ? 'disabled' : ''}>▶ Cups starten</button>
+        </form></div>
+        ${openCount ? `<p class="small muted">Noch ${esc(openCount)} offene Spiele in der Vorrunde.</p>` : ''}</div>`
       : '';
 
   return `${adminBox}
-    <div class="card"><h2>Tabelle der Vorrunde</h2>
+    <div class="card reveal"><h2>Tabelle der Vorrunde</h2>
       <div class="table-wrap"><table>
         <thead><tr><th>#</th><th>${ev.mode === 'double' ? 'Team' : 'Spieler'}</th><th class="num">Sp.</th><th class="num">S</th><th class="num">N</th><th class="num">Legs</th><th class="num">Diff</th><th>${ev.cups.length ? 'Cup' : 'Prognose'}</th></tr></thead>
         <tbody>${q.standings
           .map((r) => {
             const cupKey = ev.cups.length ? ev.cups.find((c) => c.entryIds.includes(r.entryId))?.key : cupOf(r.rank);
             return `<tr class="${isMyEntry(ev, r.entryId) ? 'me' : ''} ${cuts.has(r.rank) ? 'cut' : ''}">
-              <td class="rank">${r.rank}</td><td>${esc(names[r.entryId])}</td>
-              <td class="num">${r.played + r.byes}</td><td class="num">${r.wins}</td><td class="num">${r.losses}</td>
-              <td class="num">${r.legsFor}:${r.legsAgainst}</td><td class="num">${r.legDiff > 0 ? '+' : ''}${r.legDiff}</td>
+              <td class="rank">${esc(r.rank)}</td><td>${esc(names[r.entryId])}</td>
+              <td class="num">${esc(r.played + r.byes)}</td><td class="num">${esc(r.wins)}</td><td class="num">${esc(r.losses)}</td>
+              <td class="num">${esc(r.legsFor)}:${esc(r.legsAgainst)}</td><td class="num">${r.legDiff > 0 ? '+' : ''}${esc(r.legDiff)}</td>
               <td>${cupTag(cupKey)}</td></tr>`;
           })
           .join('')}</tbody></table></div>
@@ -417,87 +562,87 @@ function tabQualifying(ev, names) {
     </div>
     ${rounds
       .map(
-        (r) => `<div class="bracket-section"><h3>Runde ${r}</h3><div class="matches">${q.matches
+        (r) => `<div class="bracket-section reveal"><h3>Runde ${esc(r)}</h3><div class="matches">${q.matches
           .filter((m) => m.round === r)
-          .map((m) => matchCard(ev, m, names, { editing: state.editing }))
+          .map((m) => matchCard(ev, m, names))
           .join('')}</div></div>`
       )
       .join('')}`;
-}
-
-function previewCupSizes(n, k) {
-  k = Math.max(1, Math.min(k, 3, Math.max(1, Math.floor(n / 2))));
-  const base = Math.floor(n / k);
-  const rem = n % k;
-  return Array.from({ length: k }, (_, i) => base + (i < rem ? 1 : 0));
-}
-
-function tabCups(ev, names) {
-  if (!ev.cups.length) return `<p class="muted">Die Cups werden nach der Vorrunde ausgelost.</p>`;
-  const open = ev.cups.flatMap((c) => c.matches.filter((m) => !m.winner).map((m) => ({ m, c })));
-  return `
-    ${open.length ? `<div class="card"><h2>Jetzt zu spielen (${open.length})</h2><div class="matches">${open.map(({ m, c }) => matchCard(ev, m, names, { label: `${CUP_NAMES[c.key]} · ${stageName(m)}` })).join('')}</div></div>` : ''}
-    ${ev.cups.map((c) => cupBlock(ev, c, names)).join('')}`;
 }
 
 function stageName(m) {
   return { W: 'Winners Bracket', L: 'Losers Bracket', SF: 'Halbfinale', F: 'Finale' }[m.stage];
 }
 
+function tabCups(ev, names) {
+  if (!ev.cups.length) return `<div class="card empty"><div class="big">🏆</div>Die Cups werden nach der Vorrunde ausgelost.</div>`;
+  const open = ev.cups.flatMap((c) => c.matches.filter((m) => !m.winner).map((m) => ({ m, c })));
+  return `
+    ${open.length ? `<div class="card reveal"><h2><i class="live-dot cup-advanced"></i> Jetzt zu spielen (${esc(open.length)})</h2><div class="matches">${open.map(({ m, c }) => matchCard(ev, m, names, { label: `${CUP_NAMES[c.key]} · ${stageName(m)}` })).join('')}</div></div>` : ''}
+    ${ev.cups.map((c) => cupBlock(ev, c, names)).join('')}`;
+}
+
 function cupBlock(ev, cup, names) {
   const rounds = (stage) => [...new Set(cup.matches.filter((m) => m.stage === stage).map((m) => m.round))].sort((a, b) => a - b);
-  const columns = (stage, label) =>
+  const columns = (stage) =>
     rounds(stage)
       .map(
-        (r, i) => `<div class="col"><div class="col-title">${label} ${i + 1}</div>${cup.matches
+        (r, i) => `<div class="col"><div class="col-title">Runde ${i + 1}</div>${cup.matches
           .filter((m) => m.stage === stage && m.round === r)
-          .map((m) => matchCard(ev, m, names, { editing: state.editing }))
+          .map((m) => matchCard(ev, m, names))
           .join('')}</div>`
       )
       .join('');
   const finals = ['SF', 'F']
     .map((s) => {
       const ms = cup.matches.filter((m) => m.stage === s);
-      return ms.length ? `<div class="col"><div class="col-title">${s === 'SF' ? 'Halbfinale' : 'Finale'}</div>${ms.map((m) => matchCard(ev, m, names, { editing: state.editing })).join('')}</div>` : '';
+      return ms.length ? `<div class="col"><div class="col-title">${s === 'SF' ? 'Halbfinale' : 'Finale'}</div>${ms.map((m) => matchCard(ev, m, names)).join('')}</div>` : '';
     })
     .join('');
   const champ = cup.placements?.find((p) => p.place === 1);
-  const lb = columns('L', 'Runde');
+  const lb = columns('L');
 
-  return `<section class="card">
-    <div class="spread cup-header cup-${cup.key}">
-      <div><h2>${esc(cup.name)}</h2><div class="muted small">${cup.entryIds.length} ${ev.mode === 'double' ? 'Teams' : 'Spieler'} · Setzliste nach Vorrunde</div></div>
-      <div class="row">${champ ? `<strong>🏆 ${esc(names[champ.entryId])}</strong>` : ''}
-        ${isAdmin() && cup.canUndo ? `<button class="small" data-action="undo-round" data-cup="${cup.key}" title="Löscht die zuletzt ausgeloste Runde, um Ergebnisse der Runde davor zu korrigieren">↶ Letzte Runde zurücknehmen</button>` : ''}</div>
+  return `<section class="card reveal">
+    <div class="spread cup-header cup-${esc(cup.key)}">
+      <div><h2 class="cup-${esc(cup.key)}">${esc(cup.name)}</h2><div class="muted small">${esc(cup.entryIds.length)} ${ev.mode === 'double' ? 'Teams' : 'Spieler'} · Setzliste nach Vorrunde</div></div>
+      <div class="row">${champ ? `<span class="champion">🏆 ${esc(names[champ.entryId])}</span>` : ''}
+        ${isAdmin() && cup.canUndo ? `<button class="small" data-action="undo-round" data-cup="${esc(cup.key)}" title="Löscht die zuletzt ausgeloste Runde, um Ergebnisse der Runde davor zu korrigieren">↶ Letzte Runde zurücknehmen</button>` : ''}</div>
     </div>
-    <div class="bracket-section" style="margin-top:14px"><h3>Winners Bracket</h3><div class="bracket">${columns('W', 'Runde') || '<p class="muted small">–</p>'}</div></div>
+    <div class="bracket-section mt-lg"><h3>Winners Bracket</h3><div class="bracket">${columns('W') || '<p class="muted small">–</p>'}</div></div>
     <div class="bracket-section"><h3>Losers Bracket</h3><div class="bracket">${lb || '<p class="muted small">Noch keine Spiele – wer im Winners Bracket verliert, landet hier.</p>'}</div></div>
     ${finals ? `<div class="bracket-section"><h3>Finalrunde (K.o.)</h3><div class="bracket">${finals}</div></div>` : ''}
   </section>`;
 }
 
 function tabResults(ev, names) {
-  if (!ev.points) return `<p class="muted">Ergebnisse gibt es nach dem Start der Vorrunde.</p>`;
+  if (!ev.points) return `<div class="card empty"><div class="big">📊</div>Ergebnisse gibt es nach dem Start der Vorrunde.</div>`;
   const podiums = ev.cups
     .filter((c) => c.placements)
-    .map(
-      (c) => `<div class="card"><h2 class="cup-${c.key}">${esc(c.name)}</h2><div class="podium">${c.placements
-        .filter((p) => p.place <= 3)
-        .map((p) => `<div>${p.place === 1 ? '🥇' : p.place === 2 ? '🥈' : '🥉'} <strong>${esc(names[p.entryId])}</strong><div class="muted small">${CATEGORY_LABEL[p.category]}</div></div>`)
-        .join('')}</div></div>`
-    )
+    .map((c, i) => {
+      const at = (p) => c.placements.filter((x) => x.place === p);
+      const p1 = at(1)[0];
+      const p2 = at(2)[0];
+      const p3 = at(3);
+      const place = (cls, list, label) =>
+        `<div class="place ${cls}"><div class="who">${list.length ? list.map((p) => esc(names[p.entryId])).join(' / ') : '–'}<small>${label}</small></div><div class="block">${cls.slice(1)}</div></div>`;
+      return `<div class="card reveal" data-i="${i}"><h2 class="cup-${esc(c.key)}">${esc(c.name)}</h2>
+        <div class="podium reveal-rise">${place('p2', p2 ? [p2] : [], 'Finalist')}${place('p1', p1 ? [p1] : [], 'Sieger')}${place('p3', p3, 'Halbfinale')}</div></div>`;
+    })
     .join('');
   const rows = [...ev.points].sort((a, b) => b.points - a.points || (a.place ?? 99) - (b.place ?? 99));
+  const maxPts = Math.max(1, ...rows.map((r) => r.points));
   return `${podiums ? `<div class="grid">${podiums}</div>` : ''}
-    <div class="card"><h2>Punkte dieses Termins</h2>
+    <div class="card reveal"><h2>Punkte dieses Termins</h2>
       ${ev.status !== 'finished' ? '<p class="small muted">Vorläufig – fließt erst nach Abschluss aller Cups in die Season-Wertung ein.</p>' : ''}
       ${!ev.seasonId ? '<p class="small muted">Dieser Termin gehört zu keiner Season.</p>' : ''}
       <div class="table-wrap"><table>
-        <thead><tr><th>${ev.mode === 'double' ? 'Team' : 'Spieler'}</th><th>Cup</th><th class="num">Platz</th><th class="num">Vorrunden-Siege</th><th class="num">Punkte${ev.mode === 'double' ? ' je Spieler' : ''}</th></tr></thead>
+        <thead><tr><th>${ev.mode === 'double' ? 'Team' : 'Spieler'}</th><th>Cup</th><th class="num">Platz</th><th class="num">VR-Siege</th><th></th><th class="num">Punkte${ev.mode === 'double' ? ' je Spieler' : ''}</th></tr></thead>
         <tbody>${rows
           .map(
             (r) => `<tr class="${isMyEntry(ev, r.entryId) ? 'me' : ''}"><td>${esc(names[r.entryId])}</td><td>${cupTag(r.cup)}</td>
-              <td class="num">${r.place ? r.place + '.' : '–'}</td><td class="num">${r.qualiWins}</td><td class="num"><strong>${r.points}</strong></td></tr>`
+              <td class="num">${r.place ? esc(r.place) + '.' : '–'}</td><td class="num">${esc(r.qualiWins)}</td>
+              <td class="bar-cell"><div class="bar"><i data-w="${Math.round((r.points / maxPts) * 100)}"></i></div></td>
+              <td class="num"><strong>${esc(r.points)}</strong></td></tr>`
           )
           .join('')}</tbody></table></div></div>`;
 }
@@ -518,32 +663,32 @@ function scheduleRefresh(ev) {
       const a = document.activeElement;
       const busy = a && ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName);
       const typed = [...document.querySelectorAll('.result-form input')].some((i) => i.value !== '' && !i.defaultValue);
-      if (!busy && !typed && !state.editing && location.hash.startsWith(`#/events/${ev.id}`)) route(true);
+      if (!busy && !typed && !state.editing && !document.hidden && location.hash.startsWith(`#/events/${ev.id}`)) route(true);
     }, 15000);
   }
 }
 
 // ---------------------------------------------------------------- seasons
 
+function seasonRange(s) {
+  if (!s.startDate && !s.endDate) return '';
+  return `${s.startDate ? fmtDate(s.startDate) : '…'} – ${s.endDate ? fmtDate(s.endDate) : '…'}`;
+}
+
 async function viewSeasons() {
   const seasons = await api('GET', '/api/seasons');
-  return `<h1>Seasons</h1>
-    ${isAdmin() ? `<details class="card"><summary>+ Neue Season</summary><div style="margin-top:12px">${seasonForm(null)}</div></details>` : ''}
+  return `<div class="page-head"><span class="eyebrow reveal">Wertung</span><h1 class="reveal">Seasons</h1></div>
+    ${isAdmin() ? `<details class="card reveal"><summary>Neue Season anlegen</summary><div>${seasonForm(null)}</div></details>` : ''}
     ${
       seasons.length
         ? `<div class="grid">${seasons
             .map(
-              (s) => `<a class="card event-card" href="#/seasons/${s.id}"><div class="spread"><h3>${esc(s.name)}</h3>${s.active ? '<span class="badge registration">aktiv</span>' : ''}</div>
-              <div class="muted small">${seasonRange(s)}${s.eventCount} Termine</div></a>`
+              (s, i) => `<a class="card event-card tilt reveal" data-i="${i % 6}" href="#/seasons/${esc(s.id)}"><div class="spread lift"><span class="eyebrow">🏆 Season</span>${s.active ? '<span class="badge registration"><i class="live-dot"></i>aktiv</span>' : ''}</div>
+              <h3 class="lift">${esc(s.name)}</h3><div class="meta-line">${seasonRange(s) ? `<span>${esc(seasonRange(s))}</span>` : ''}<span>${esc(s.eventCount)} Termine</span></div></a>`
             )
             .join('')}</div>`
-        : '<p class="muted">Noch keine Seasons.</p>'
+        : '<div class="card empty"><div class="big">🏆</div>Noch keine Seasons.</div>'
     }`;
-}
-
-function seasonRange(s) {
-  if (!s.startDate && !s.endDate) return '';
-  return `${s.startDate ? fmtDate(s.startDate) : '…'} – ${s.endDate ? fmtDate(s.endDate) : '…'} · `;
 }
 
 function seasonForm(s) {
@@ -562,7 +707,7 @@ function seasonForm(s) {
       <div class="wide"><label>Name</label><input name="name" required maxlength="100" value="${esc(s?.name || '')}" placeholder="z. B. Season 2026/27"></div>
       <div><label>Start</label><input type="date" name="startDate" value="${esc(s?.startDate || '')}"></div>
       <div><label>Ende</label><input type="date" name="endDate" value="${esc(s?.endDate || '')}"></div>
-      <div style="align-self:end"><label class="checkbox"><input type="checkbox" name="active" ${!s || s.active ? 'checked' : ''}> Aktive Season</label></div>
+      <div class="end"><label class="checkbox"><input type="checkbox" name="active" ${!s || s.active ? 'checked' : ''}> Aktive Season</label></div>
     </div>
     <h3>Punktevergabe (pro Spieler)</h3>
     <div class="form-grid">
@@ -589,71 +734,120 @@ function seasonPayload(f) {
 }
 
 async function viewSeason(id) {
-  const data = await api('GET', `/api/seasons/${id}/standings`);
+  const data = await api('GET', `/api/seasons/${encodeURIComponent(id)}/standings`);
   const s = data.season;
   state.season = s;
-  const filter = state.seasonFilter || 'points';
-  const rows = [...data.rows].sort((a, b) => b[filter] - a[filter] || b.points - a.points);
+  const filter = state.seasonFilter;
+  const rows = [...data.rows].sort((a, b) => b[filter] - a[filter] || b.points - a.points).filter((r) => filter === 'points' || r[filter] > 0);
   let rank = 0;
   let last = null;
   rows.forEach((r, i) => {
     if (r[filter] !== last) rank = i + 1;
-    r._rank = rank;
+    r.rank = rank;
+    r.value = r[filter];
     last = r[filter];
   });
+  const maxPts = Math.max(1, ...rows.map((r) => r.value));
   const p = s.points;
-  return `<div class="spread"><div><h1>${esc(s.name)}</h1><div class="muted">${seasonRange(s)}${s.active ? '<span class="badge registration">aktiv</span>' : ''}</div></div></div>
-    <div class="card">
-      <div class="spread"><h2>Gesamtwertung</h2>
-        <div class="row small">Wertung:
-          ${[['points', 'Gesamt'], ['single', 'Einzel'], ['double', 'Doppel']]
-            .map(([k, l]) => `<button class="small ${filter === k ? 'primary' : ''}" data-action="season-filter" data-filter="${k}">${l}</button>`)
-            .join('')}</div></div>
-      ${
-        rows.length
-          ? `<div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Spieler</th><th class="num">Punkte</th><th class="num">Einzel</th><th class="num">Doppel</th><th class="num">Termine</th><th class="num">Titel</th><th class="num">Finals</th><th class="num">VR-Siege</th>
-          ${data.events.map((e) => `<th class="num" title="${esc(e.name)}"><a href="#/events/${e.id}">${esc(fmtDate(e.date).slice(0, 6) || e.name)}</a><br><span class="small">${e.mode === 'double' ? 'D' : 'E'}</span></th>`).join('')}</tr></thead>
+  return `<div class="page-head"><span class="eyebrow reveal">${s.active ? '<i class="live-dot cup-beginner"></i> Aktive Season' : 'Season'}${seasonRange(s) ? ' · ' + esc(seasonRange(s)) : ''}</span><h1 class="reveal">${esc(s.name)}</h1></div>
+    <div class="row reveal">
+      ${[['points', 'Gesamt'], ['single', 'Einzel'], ['double', 'Doppel']]
+        .map(([k, l]) => `<button class="small ${filter === k ? 'primary' : ''}" data-action="season-filter" data-filter="${k}">${l}</button>`)
+        .join('')}
+    </div>
+    ${
+      rows.length
+        ? `<div class="mt">${rankingPodium(rows)}</div>
+        <div class="card flush reveal"><div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>Spieler</th><th></th><th class="num">Punkte</th><th class="num">Einzel</th><th class="num">Doppel</th><th class="num">Termine</th><th class="num">Titel</th><th class="num">Finals</th><th class="num">VR-Siege</th>
+          ${data.events.map((e) => `<th class="num" title="${esc(e.name)}"><a href="#/events/${esc(e.id)}">${esc(fmtDate(e.date).slice(0, 6) || e.name)}</a><br><span class="small">${e.mode === 'double' ? 'D' : 'E'}</span></th>`).join('')}</tr></thead>
           <tbody>${rows
             .map(
-              (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank">${r._rank}.</td><td>${esc(r.name)}</td>
-              <td class="num"><strong>${r.points}</strong></td><td class="num">${r.single}</td><td class="num">${r.double}</td><td class="num">${r.events}</td>
-              <td class="num">${r.titles}</td><td class="num">${r.finals}</td><td class="num">${r.qualiWins}</td>
-              ${data.events.map((e) => {
-                const pe = r.perEvent[e.id];
-                return `<td class="num" title="${pe ? `${CUP_NAMES[pe.cup] || ''} Platz ${pe.place ?? '–'}` : ''}">${pe ? `<span class="cup-${pe.cup}">${pe.points}</span>` : '<span class="muted">–</span>'}</td>`;
-              }).join('')}</tr>`
+              (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td><strong>${esc(r.name)}</strong></td>
+              <td class="bar-cell"><div class="bar"><i data-w="${Math.round((r.value / maxPts) * 100)}"></i></div></td>
+              <td class="num"><strong>${esc(r.points)}</strong></td><td class="num">${esc(r.single)}</td><td class="num">${esc(r.double)}</td><td class="num">${esc(r.events)}</td>
+              <td class="num">${esc(r.titles)}</td><td class="num">${esc(r.finals)}</td><td class="num">${esc(r.qualiWins)}</td>
+              ${data.events
+                .map((e) => {
+                  const pe = r.perEvent[e.id];
+                  return `<td class="num" title="${pe ? esc(`${CUP_NAMES[pe.cup] || ''} Platz ${pe.place ?? '–'}`) : ''}">${pe ? `<span class="cup-${esc(pe.cup)}">${esc(pe.points)}</span>` : '<span class="muted">–</span>'}</td>`;
+                })
+                .join('')}</tr>`
             )
-            .join('')}</tbody></table></div>`
-          : '<p class="muted">Noch keine abgeschlossenen Termine in dieser Season.</p>'
-      }
-    </div>
-    <div class="card"><h2>Punktevergabe</h2>
-      <p>Teilnahme: <strong>${p.participation}</strong> · je Vorrunden-Sieg: <strong>${p.qualiWin}</strong> (Freilose ausgenommen). Im Doppel erhalten beide Spieler die Punkte.</p>
+            .join('')}</tbody></table></div></div>`
+        : '<div class="card empty mt"><div class="big">🏆</div>Noch keine abgeschlossenen Termine in dieser Wertung.</div>'
+    }
+    <div class="card reveal mt-lg"><h2>Punktevergabe</h2>
+      <p class="muted">Teilnahme: <strong>${esc(p.participation)}</strong> · je Vorrunden-Sieg: <strong>${esc(p.qualiWin)}</strong> (Freilose ausgenommen). Im Doppel erhalten beide Spieler die Punkte.</p>
       <div class="table-wrap"><table><thead><tr><th>Cup</th><th class="num">Sieger</th><th class="num">Finalist</th><th class="num">Halbfinale</th><th class="num">Sonstige</th></tr></thead>
-      <tbody>${['pro', 'advanced', 'beginner'].map((k) => `<tr><td>${cupTag(k)}</td>${['winner', 'final', 'semi', 'other'].map((c) => `<td class="num">${p.cups[k][c]}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <tbody>${['pro', 'advanced', 'beginner'].map((k) => `<tr><td>${cupTag(k)}</td>${['winner', 'final', 'semi', 'other'].map((c) => `<td class="num">${esc(p.cups[k][c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
     </div>
-    ${isAdmin() ? `<details class="card"><summary>⚙ Season bearbeiten</summary><div style="margin-top:12px">${seasonForm(s)}</div></details>` : ''}`;
+    ${isAdmin() ? `<details class="card"><summary>Season bearbeiten</summary><div>${seasonForm(s)}</div></details>` : ''}`;
 }
 
-// ---------------------------------------------------------------- players / auth
+function rankingPodium(rows) {
+  const top = rows.slice(0, 3);
+  const order = [top[1], top[0], top[2]];
+  const cls = ['p2', 'p1', 'p3'];
+  return `<div class="card reveal"><div class="podium reveal-rise">${order
+    .map((r, i) =>
+      r ? `<div class="place ${cls[i]}"><div class="who">${esc(r.name)}<small>${esc(r.value)} Punkte</small></div><div class="block">${cls[i].slice(1)}</div></div>` : `<div class="place ${cls[i]}"></div>`
+    )
+    .join('')}</div></div>`;
+}
+
+// ---------------------------------------------------------------- spieler & verwaltung
 
 async function viewPlayers() {
   if (!state.me) return viewLogin();
   const users = await loadUsers(true);
-  return `<h1>Spieler</h1>
-    ${isAdmin() ? `<div class="card"><form data-form="guest-add" class="row"><input name="name" placeholder="Name des Gastspielers" maxlength="60" required style="max-width:280px"><button>Gastspieler anlegen</button></form>
-      <p class="small muted">Gastspieler haben keinen Login und werden vom Admin zu Terminen eingetragen.</p></div>` : ''}
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Benutzername</th><th>Rolle</th>${isAdmin() ? '<th></th>' : ''}</tr></thead>
-      <tbody>${users
+  const settings = isAdmin() ? await api('GET', '/api/settings') : null;
+  const pending = users.filter((u) => !u.approved);
+  const list = users.filter((u) => u.approved);
+
+  const settingsBox = settings
+    ? `<div class="card reveal"><h2>Registrierung</h2>
+      <form data-form="settings" class="stack">
+        <label class="checkbox"><input type="checkbox" name="registrationOpen" ${settings.registrationOpen ? 'checked' : ''}> Neue Registrierungen erlauben</label>
+        <label class="checkbox"><input type="checkbox" name="requireApproval" ${settings.requireApproval ? 'checked' : ''}> Neue Accounts müssen vom Admin freigeschaltet werden</label>
+        <div><button class="primary">Speichern</button></div>
+      </form></div>`
+    : '';
+
+  const pendingBox =
+    isAdmin() && pending.length
+      ? `<div class="card reveal"><h2>⏳ Warten auf Freischaltung (${esc(pending.length)})</h2>
+        <ul class="entry-list">${pending
+          .map(
+            (u) => `<li><span class="who"><span class="avatar">${initials(u.name)}</span><span><strong>${esc(u.name)}</strong><br><span class="muted small">@${esc(u.username)}</span></span></span>
+            <span class="row"><button class="small primary" data-action="user-approve" data-user="${esc(u.id)}">Freischalten</button><button class="small danger" data-action="user-delete" data-user="${esc(u.id)}">Ablehnen</button></span></li>`
+          )
+          .join('')}</ul></div>`
+      : '';
+
+  return `<div class="page-head"><span class="eyebrow reveal">Community</span><h1 class="reveal">Spieler</h1></div>
+    ${pendingNotice()}
+    ${pendingBox}
+    ${
+      isAdmin()
+        ? `<div class="grid-2">${settingsBox}<div class="card reveal" data-i="1"><h2>Gastspieler</h2><form data-form="guest-add" class="row"><input class="narrow" name="name" placeholder="Name des Gastspielers" maxlength="60" required><button>Anlegen</button></form>
+      <p class="small muted">Gastspieler haben keinen Login und werden vom Admin zu Terminen eingetragen.</p></div></div>`
+        : ''
+    }
+    <div class="card flush reveal"><div class="table-wrap"><table>
+      <thead><tr><th>Name</th>${isAdmin() ? '<th>Benutzername</th>' : ''}<th>Rolle</th>${isAdmin() ? '<th></th>' : ''}</tr></thead>
+      <tbody>${list
         .map(
-          (u) => `<tr class="${u.id === state.me.id ? 'me' : ''}"><td>${esc(u.name)}</td><td class="muted">${u.username ? '@' + esc(u.username) : 'Gast'}</td>
+          (u) => `<tr class="${u.id === state.me.id ? 'me' : ''}"><td><strong>${esc(u.name)}</strong></td>${isAdmin() ? `<td class="muted">${u.username ? '@' + esc(u.username) : '–'}</td>` : ''}
           <td>${u.role === 'admin' ? '<span class="badge admin">Admin</span>' : u.guest ? '<span class="badge">Gast</span>' : '<span class="badge">Spieler</span>'}</td>
           ${
             isAdmin()
-              ? `<td class="right"><button class="small" data-action="user-rename" data-user="${u.id}">Umbenennen</button>
-            ${!u.guest ? `<button class="small" data-action="user-role" data-user="${u.id}" data-role="${u.role === 'admin' ? 'player' : 'admin'}">${u.role === 'admin' ? 'Admin entziehen' : 'Zum Admin'}</button>` : `<button class="small danger" data-action="user-delete" data-user="${u.id}">Löschen</button>`}</td>`
+              ? `<td class="right"><span class="row">
+                <button class="small" data-action="user-rename" data-user="${esc(u.id)}">Umbenennen</button>
+                ${!u.guest ? `<button class="small" data-action="user-password" data-user="${esc(u.id)}">Passwort</button>` : ''}
+                ${!u.guest && u.id !== state.me.id ? `<button class="small" data-action="user-role" data-user="${esc(u.id)}" data-role="${u.role === 'admin' ? 'player' : 'admin'}">${u.role === 'admin' ? 'Admin entziehen' : 'Zum Admin'}</button>` : ''}
+                ${u.role !== 'admin' ? `<button class="small danger" data-action="user-delete" data-user="${esc(u.id)}" aria-label="Löschen">✕</button>` : ''}
+              </span></td>`
               : ''
           }</tr>`
         )
@@ -661,37 +855,153 @@ async function viewPlayers() {
 }
 
 function viewLogin() {
-  return `<div class="card auth-box"><h1>Anmelden</h1>
+  return `<div class="auth-wrap"><div class="card auth-box tilt reveal"><span class="eyebrow">Willkommen zurück</span><h1>Anmelden</h1>
     <form data-form="login" class="stack">
       <div><label>Benutzername</label><input name="username" autocomplete="username" required></div>
       <div><label>Passwort</label><input type="password" name="password" autocomplete="current-password" required></div>
       <button class="primary">Anmelden</button>
-      <p class="small muted">Noch kein Account? <a href="#/register">Registrieren</a></p>
-    </form></div>`;
+      ${state.registrationOpen ? '<p class="small muted">Noch kein Account? <a href="#/register">Registrieren</a></p>' : ''}
+    </form></div></div>`;
 }
 
 function viewRegister() {
-  return `<div class="card auth-box"><h1>Registrieren</h1>
-    ${state.needsSetup ? '<div class="notice small">Du bist der erste Benutzer und wirst Administrator.</div>' : ''}
+  if (!state.registrationOpen && !state.needsSetup) {
+    return `<div class="auth-wrap"><div class="card auth-box empty"><div class="big">🔒</div>Die Registrierung ist derzeit geschlossen. Wende dich an den Turnierleiter.</div></div>`;
+  }
+  return `<div class="auth-wrap"><div class="card auth-box tilt reveal"><span class="eyebrow">Mitspielen</span><h1>Registrieren</h1>
+    ${state.needsSetup ? '<div class="notice info small">Ersteinrichtung: Mit dem Setup-Code aus dem Server-Log wirst du Administrator.</div>' : ''}
+    ${!state.needsSetup && state.requireApproval ? '<p class="small muted">Neue Accounts werden von einem Admin freigeschaltet.</p>' : ''}
     <form data-form="register" class="stack">
+      ${state.needsSetup ? '<div><label>Setup-Code</label><input name="setupCode" required autocomplete="off"></div>' : ''}
       <div><label>Anzeigename</label><input name="name" maxlength="60" required placeholder="z. B. Max Mustermann"></div>
       <div><label>Benutzername</label><input name="username" autocomplete="username" required pattern="[a-zA-Z0-9_.\\-]{3,40}" title="3–40 Zeichen: Buchstaben, Zahlen, _ . -"></div>
-      <div><label>Passwort (min. 6 Zeichen)</label><input type="password" name="password" minlength="6" autocomplete="new-password" required></div>
+      <div><label>Passwort (min. 8 Zeichen)</label><input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password" required></div>
       <button class="primary">Account erstellen</button>
       <p class="small muted">Schon registriert? <a href="#/login">Anmelden</a></p>
-    </form></div>`;
+    </form></div></div>`;
 }
 
 function viewProfile() {
   if (!state.me) return viewLogin();
-  return `<div class="card auth-box"><h1>Profil</h1>
+  return `<div class="auth-wrap"><div class="card auth-box reveal"><span class="eyebrow">Dein Account</span><h1>Profil</h1>
     <form data-form="profile" class="stack">
       <div><label>Anzeigename</label><input name="name" maxlength="60" required value="${esc(state.me.name)}"></div>
       <div><label>Aktuelles Passwort (nur für Passwortwechsel)</label><input type="password" name="currentPassword" autocomplete="current-password"></div>
-      <div><label>Neues Passwort</label><input type="password" name="newPassword" minlength="6" autocomplete="new-password"></div>
+      <div><label>Neues Passwort (min. 8 Zeichen)</label><input type="password" name="newPassword" minlength="8" maxlength="200" autocomplete="new-password"></div>
       <button class="primary">Speichern</button>
-    </form></div>`;
+      <p class="small muted">Beim Passwortwechsel werden alle anderen Sitzungen abgemeldet.</p>
+    </form></div></div>`;
 }
+
+// ---------------------------------------------------------------- effekte
+
+const revealObserver =
+  'IntersectionObserver' in window
+    ? new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            e.target.classList.add('in');
+            if (e.target.querySelector('[data-count]')) countUp(e.target);
+            revealObserver.unobserve(e.target);
+          }
+        },
+        { threshold: 0, rootMargin: '0px 0px -60px 0px' }
+      )
+    : null;
+
+function countUp(root) {
+  for (const el of root.querySelectorAll('[data-count]')) {
+    const target = Number(el.dataset.count) || 0;
+    if (reducedMotion || target === 0) {
+      el.textContent = target.toLocaleString('de-DE');
+      continue;
+    }
+    const start = performance.now();
+    const dur = 1400;
+    const tick = (t) => {
+      const k = Math.min(1, (t - start) / dur);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - k, 3))).toLocaleString('de-DE');
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+}
+
+/** Nach jedem Rendern: Animationen, Balken, 3D-Effekte anbinden */
+function enhance(root, animate) {
+  for (const el of root.querySelectorAll('[data-i]')) el.style.setProperty('--i', el.dataset.i);
+  for (const el of root.querySelectorAll('[data-w]')) el.style.setProperty('--w', el.dataset.w + '%');
+  for (const el of root.querySelectorAll('.bar')) el.classList.add('in');
+  for (const el of root.querySelectorAll('[data-z]')) el.style.transform = `translateZ(${el.dataset.z}px)`;
+  const steps = root.querySelector('.steps[data-step]');
+  if (steps) {
+    const n = Number(steps.dataset.step);
+    requestAnimationFrame(() => steps.style.setProperty('--step-progress', String(n >= 3 ? 1 : n / 3)));
+  }
+
+  const targets = root.querySelectorAll('.reveal, .reveal-flip, .reveal-rise');
+  if (!animate || !revealObserver || reducedMotion) {
+    targets.forEach((el) => el.classList.add('in'));
+    countUp(root);
+  } else {
+    targets.forEach((el) => revealObserver.observe(el));
+  }
+
+  if (!reducedMotion && window.matchMedia('(hover: hover)').matches) {
+    for (const el of root.querySelectorAll('.tilt')) bindTilt(el);
+  }
+}
+
+function bindTilt(el) {
+  el.addEventListener('pointermove', (e) => {
+    const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    el.classList.add('tilting');
+    el.style.setProperty('--ry', `${(x - 0.5) * 12}deg`);
+    el.style.setProperty('--rx', `${(0.5 - y) * 10}deg`);
+    el.style.setProperty('--mx', `${x * 100}%`);
+    el.style.setProperty('--my', `${y * 100}%`);
+  });
+  el.addEventListener('pointerleave', () => {
+    el.classList.remove('tilting');
+    el.style.setProperty('--rx', '0deg');
+    el.style.setProperty('--ry', '0deg');
+  });
+}
+
+// Scroll-gekoppelte Effekte: Fortschrittsbalken, Header, Hintergrund, Dartscheibe
+let scrollTicking = false;
+function onScroll() {
+  if (scrollTicking) return;
+  scrollTicking = true;
+  requestAnimationFrame(() => {
+    const y = window.scrollY;
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    document.documentElement.style.setProperty('--progress', max > 0 ? (y / max).toFixed(4) : '0');
+    document.documentElement.style.setProperty('--scroll', String(Math.round(y)));
+    document.getElementById('topbar').classList.toggle('scrolled', y > 10);
+    const board = document.getElementById('board');
+    if (board && !reducedMotion) board.style.setProperty('--brz', `${Math.min(y * 0.04, 40).toFixed(1)}deg`);
+    scrollTicking = false;
+  });
+}
+window.addEventListener('scroll', onScroll, { passive: true });
+
+// Dartscheibe folgt dem Mauszeiger
+window.addEventListener(
+  'pointermove',
+  (e) => {
+    const board = document.getElementById('board');
+    if (!board || reducedMotion) return;
+    const x = e.clientX / window.innerWidth - 0.5;
+    const y = e.clientY / window.innerHeight - 0.5;
+    board.style.setProperty('--bry', `${(x * 26).toFixed(2)}deg`);
+    board.style.setProperty('--brx', `${(-y * 20).toFixed(2)}deg`);
+  },
+  { passive: true }
+);
 
 // ---------------------------------------------------------------- router
 
@@ -715,9 +1025,18 @@ async function route(silent = false) {
     else if (parts[0] === 'login') html = viewLogin();
     else if (parts[0] === 'register') html = viewRegister();
     else if (parts[0] === 'profile') html = viewProfile();
-    else html = '<h1>Seite nicht gefunden</h1>';
+    else html = '<div class="card empty"><div class="big">🎯</div><h1>Daneben geworfen</h1>Diese Seite gibt es nicht. <a href="#/">Zur Übersicht</a></div>';
     $app.innerHTML = html;
-    if (silent) window.scrollTo(0, scrollY);
+    if (silent) {
+      window.scrollTo(0, scrollY);
+    } else {
+      $app.classList.remove('page-enter');
+      void $app.offsetWidth;
+      $app.classList.add('page-enter');
+      window.scrollTo(0, 0);
+    }
+    enhance($app, !silent);
+    onScroll();
   } catch (e) {
     $app.innerHTML = `<div class="card"><h2>Fehler</h2><p>${esc(e.message)}</p></div>`;
   }
@@ -726,13 +1045,17 @@ async function route(silent = false) {
 async function refreshMe() {
   const r = await api('GET', '/api/me');
   state.me = r.user;
+  state.approved = r.approved !== false;
   state.needsSetup = r.needsSetup;
+  state.registrationOpen = r.registrationOpen;
+  state.requireApproval = r.requireApproval;
   state.users = null;
 }
 
-// ---------------------------------------------------------------- actions
+// ---------------------------------------------------------------- aktionen
 
-const evUrl = (suffix = '') => `/api/events/${state.event.id}${suffix}`;
+const evUrl = (suffix = '') => `/api/events/${encodeURIComponent(state.event.id)}${suffix}`;
+const enc = encodeURIComponent;
 
 async function afterEventChange(msg) {
   state.users = null;
@@ -742,6 +1065,11 @@ async function afterEventChange(msg) {
 }
 
 const actions = {
+  menu() {
+    const bar = document.getElementById('topbar');
+    const open = bar.classList.toggle('open');
+    bar.querySelector('.menu-toggle').setAttribute('aria-expanded', String(open));
+  },
   async logout() {
     await api('POST', '/api/logout');
     await refreshMe();
@@ -751,15 +1079,15 @@ const actions = {
   },
   async 'register-self'() {
     await api('POST', evUrl('/register'));
-    afterEventChange('Angemeldet!');
+    afterEventChange('Angemeldet – viel Erfolg! 🎯');
   },
   async 'join-entry'(el) {
-    await api('POST', evUrl(`/entries/${el.dataset.entry}/join`));
+    await api('POST', evUrl(`/entries/${enc(el.dataset.entry)}/join`));
     afterEventChange('Team beigetreten');
   },
   async 'entry-remove'(el) {
     if (!confirm('Anmeldung wirklich entfernen?')) return;
-    await api('DELETE', evUrl(`/entries/${el.dataset.entry}`));
+    await api('DELETE', evUrl(`/entries/${enc(el.dataset.entry)}`));
     afterEventChange('Anmeldung entfernt');
   },
   async 'pair-solos'() {
@@ -774,15 +1102,12 @@ const actions = {
   },
   async 'edit-result'(el) {
     state.editing = el.dataset.match;
-    const scrollY = window.scrollY;
-    const parts = location.hash.split('/');
-    $app.innerHTML = await viewEvent(state.event.id, parts[3]);
-    window.scrollTo(0, scrollY);
-    document.querySelector(`form[data-match="${el.dataset.match}"] input`)?.focus();
+    await route(true);
+    document.querySelector(`form[data-match="${CSS.escape(el.dataset.match)}"] input`)?.focus();
   },
   async 'undo-round'(el) {
     if (!confirm('Die zuletzt ausgeloste Runde dieses Cups löschen?')) return;
-    await api('POST', evUrl(`/cups/${el.dataset.cup}/undo`));
+    await api('POST', evUrl(`/cups/${enc(el.dataset.cup)}/undo`));
     afterEventChange('Runde zurückgenommen');
   },
   async reset(el) {
@@ -804,24 +1129,37 @@ const actions = {
   },
   async 'season-delete'() {
     if (!confirm('Season löschen?')) return;
-    await api('DELETE', `/api/seasons/${state.season.id}`);
+    await api('DELETE', `/api/seasons/${enc(state.season.id)}`);
     location.hash = '#/seasons';
   },
   async 'user-rename'(el) {
     const u = state.users.find((x) => x.id === el.dataset.user);
     const name = prompt('Neuer Name', u?.name || '');
     if (!name) return;
-    await api('PUT', `/api/users/${el.dataset.user}`, { name });
+    await api('PUT', `/api/users/${enc(el.dataset.user)}`, { name });
+    route(true);
+  },
+  async 'user-password'(el) {
+    const u = state.users.find((x) => x.id === el.dataset.user);
+    const password = prompt(`Neues Passwort für ${u?.name} (min. 8 Zeichen). Alle Sitzungen des Benutzers werden beendet.`);
+    if (!password) return;
+    await api('PUT', `/api/users/${enc(el.dataset.user)}`, { password });
+    toast('Passwort gesetzt');
+  },
+  async 'user-approve'(el) {
+    await api('PUT', `/api/users/${enc(el.dataset.user)}`, { approved: true });
+    toast('Account freigeschaltet');
     route(true);
   },
   async 'user-role'(el) {
-    await api('PUT', `/api/users/${el.dataset.user}`, { role: el.dataset.role });
+    await api('PUT', `/api/users/${enc(el.dataset.user)}`, { role: el.dataset.role });
     toast('Rolle geändert');
     route(true);
   },
   async 'user-delete'(el) {
-    if (!confirm('Gastspieler löschen?')) return;
-    await api('DELETE', `/api/users/${el.dataset.user}`);
+    if (!confirm('Benutzer löschen?')) return;
+    await api('DELETE', `/api/users/${enc(el.dataset.user)}`);
+    toast('Benutzer gelöscht');
     route(true);
   },
 };
@@ -836,7 +1174,7 @@ const forms = {
   async register(f) {
     await api('POST', '/api/register', f);
     await refreshMe();
-    toast(state.me.role === 'admin' ? 'Account erstellt – du bist Administrator.' : 'Account erstellt!');
+    toast(state.me.role === 'admin' ? 'Account erstellt – du bist Administrator.' : state.approved ? 'Account erstellt!' : 'Account erstellt – wartet auf Freischaltung.');
     location.hash = '#/';
   },
   async profile(f) {
@@ -844,6 +1182,12 @@ const forms = {
     await refreshMe();
     toast('Profil gespeichert');
     route();
+  },
+  async settings(f) {
+    await api('PUT', '/api/settings', { registrationOpen: !!f.registrationOpen, requireApproval: !!f.requireApproval });
+    await refreshMe();
+    toast('Einstellungen gespeichert');
+    route(true);
   },
   async 'event-create'(f) {
     const ev = await api('POST', '/api/events', eventPayload(f));
@@ -856,10 +1200,10 @@ const forms = {
   },
   async 'register-double'(f) {
     await api('POST', evUrl('/register'), { partnerId: f.partnerId || null, teamName: f.teamName });
-    afterEventChange('Angemeldet!');
+    afterEventChange('Angemeldet – viel Erfolg! 🎯');
   },
   async 'team-name'(f, form) {
-    await api('PUT', evUrl(`/entries/${form.dataset.entry}`), { teamName: f.teamName });
+    await api('PUT', evUrl(`/entries/${enc(form.dataset.entry)}`), { teamName: f.teamName });
     afterEventChange('Teamname gespeichert');
   },
   async 'admin-add-entry'(f) {
@@ -883,7 +1227,7 @@ const forms = {
     toast('Cups ausgelost');
   },
   async result(f, form) {
-    await api('POST', evUrl(`/matches/${form.dataset.match}/result`), { legsA: Number(f.legsA), legsB: Number(f.legsB) });
+    await api('POST', evUrl(`/matches/${enc(form.dataset.match)}/result`), { legsA: Number(f.legsA), legsB: Number(f.legsB) });
     afterEventChange('Ergebnis gespeichert');
   },
   async 'season-create'(f) {
@@ -892,7 +1236,7 @@ const forms = {
     location.hash = `#/seasons/${s.id}`;
   },
   async 'season-edit'(f) {
-    await api('PUT', `/api/seasons/${state.season.id}`, seasonPayload(f));
+    await api('PUT', `/api/seasons/${enc(state.season.id)}`, seasonPayload(f));
     toast('Season gespeichert');
     route(true);
   },
