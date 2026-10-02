@@ -16,6 +16,13 @@ npm test           # Turnier-Logik, API und Sicherheit testen
 - **Termine**: Einzel oder Doppel, beliebige Teilnehmerzahl mit optionalem Maximum, Anzahl der Vorrundenspiele und einstellbares Best-of.
 - **Anmeldung**: Spieler melden sich selbst an. Im Doppel geht das mit Partner oder als „Partner gesucht“. Der Admin kann übrige Einzelspieler zu Teams auslosen und **Gastspieler** ohne Account anlegen.
 - **Live-Ergebnisse**: Der Admin oder die beteiligten Spieler tragen die Ergebnisse ein. Die Seite aktualisiert sich alle 15 Sekunden.
+- **Spielerprofile** (Klick auf einen Namen oder „Meine Statistiken“ über den eigenen Namen oben rechts):
+  - Turniere, Titel, Siegquote, Leg-Differenz, Season-Punkte und längste Siegesserie
+  - Form der letzten 10 Spiele und ein Diagramm „Punkte je Turnier“
+  - Cup-Einteilung, Bilanz nach Phase und Modus, direkter Vergleich mit Lieblings- und Angstgegner, Doppel-Partner
+  - komplette Turnierhistorie, filterbar nach Season
+- **Statistiken**: Gesamtzahlen und Bestenlisten (Punkte, Titel, Siege, Siegquote, Leg-Differenz, Siegesserie, Turniere, Siege zu Null), dazu Rekorde und ein Archiv aller vergangenen Turniere mit ihren Siegern, filterbar nach Season.
+- **Turnier-Statistik** (Tab „Statistik“ je Termin): Spiele, Legs, Siege zu Null und Entscheidungslegs, dazu der Weg der Sieger zum Titel, Überraschungen, die meisten Siege bzw. Legs und wer in der Vorrunde ungeschlagen blieb.
 - **Design**: Dunkles Thema, 3D-Dartscheibe, die der Maus und dem Scrollen folgt, Scroll-Reveal-Animationen, 3D-Tilt-Karten, animierte Zähler und Ranglisten-Balken. Die Seite funktioniert auch auf dem Handy und berücksichtigt `prefers-reduced-motion`.
 
 ## Turniermodus
@@ -94,6 +101,7 @@ server.js            HTTP-Server (node:http), Timeouts, Setup-Code
 src/tournament.js    Turnier-Logik (Vorrunde, Cups, Doppel-K.o., Punkte)
 src/app.js           REST-API, Rechte, Freischaltung
 src/security.js      Rate-Limits, Security-Header, CSRF-/Origin-Prüfung
+src/stats.js         Statistiken: Spielerprofile, Bestenlisten, Turnier-Auswertung
 src/store.js         JSON-Speicher, Passwort-Hashing (scrypt)
 public/              Oberfläche (Vanilla JS, ohne Build-Schritt)
 deploy/              systemd-Dienst, Caddyfile, Install- und Backup-Skript

@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const T = require('./tournament');
 const { newId, hashPassword, verifyPassword } = require('./store');
+const { createStats } = require('./stats');
 const { RateLimiter, securityHeaders, clientIp, isHttps, sameOrigin, hashToken, safeEqual } = require('./security');
 
 class HttpError extends Error {
@@ -88,6 +89,7 @@ function createApp(store, { publicDir, rng = Math.random, setupToken = null, tru
     writes: new RateLimiter(300, 60 * 1000),
   };
   const hasAdmin = () => db.users.some((u) => u.role === 'admin');
+  const stats = createStats(db);
 
   const on = (method, pattern, handler) => {
     const keys = [];
@@ -607,6 +609,21 @@ function createApp(store, { publicDir, rng = Math.random, setupToken = null, tru
     }
     return { players: players.size, events: db.events.length, matches, legs, seasons: db.seasons.length };
   });
+
+  const seasonParam = (ctx) => {
+    const id = ctx.query.get('season');
+    return id && db.seasons.some((s) => s.id === id) ? id : null;
+  };
+
+  on('GET', '/api/stats/overview', (ctx) => stats.overview({ seasonId: seasonParam(ctx) }));
+
+  on('GET', '/api/players/:id/stats', (ctx) => {
+    const res = stats.playerStats(ctx.params.id, { seasonId: seasonParam(ctx) });
+    if (!res) fail(404, 'Spieler nicht gefunden');
+    return res;
+  });
+
+  on('GET', '/api/events/:id/stats', (ctx) => stats.eventStats(getEvent(ctx.params.id)));
 
   // ------------------------------------------------------------------ events
 

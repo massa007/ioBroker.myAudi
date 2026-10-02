@@ -36,6 +36,14 @@
   --pro: var(--red);
   --advanced: var(--blue);
   --beginner: var(--green);
+  /* Diagramm-Marks: gegen die dunkle Fläche validiert (Lightness-Band, CVD, Kontrast) */
+  --chart-pro: #ff3b5c;
+  --chart-advanced: #4a93f0;
+  --chart-beginner: #109a68;
+  --chart-accent: #ff3b5c;
+  --chart-grid: rgba(255, 255, 255, 0.07);
+  --win: #1ee39a;
+  --loss: #ff3b5c;
   --radius: 18px;
   --radius-sm: 12px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -677,7 +685,7 @@ tr:nth-child(3) .rank.medal {
   height: 100%;
   width: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--red), var(--gold));
+  background: var(--chart-accent);
   transition: width 1.2s var(--ease);
 }
 .in .bar i,
@@ -1299,6 +1307,364 @@ tr:nth-child(3) .rank.medal {
   margin-bottom: 8px;
 }
 
+/* ------------------------------------------------------------ statistiken */
+.plink {
+  color: inherit;
+  text-decoration: none;
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 0% 1px;
+  background-position: 0 100%;
+  background-repeat: no-repeat;
+  transition: background-size 0.3s var(--ease), color 0.2s;
+}
+.plink:hover {
+  color: #fff;
+  background-size: 100% 1px;
+}
+.filter-row {
+  margin: 4px 0 18px;
+}
+.player-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.avatar.xl {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.8rem;
+  background: linear-gradient(135deg, rgba(255, 59, 92, 0.55), rgba(30, 227, 154, 0.35));
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 5px var(--border-strong), 0 20px 40px -12px rgba(255, 59, 92, 0.5);
+}
+.tiles {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  margin-bottom: 18px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border);
+}
+.tile-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.tile-value {
+  font-family: var(--display);
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.tile-value b {
+  font-weight: 700;
+}
+.tile-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Diagramme */
+.chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+.chart .grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+.chart .baseline {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.chart .axis {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.chart .value {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.chart .mark {
+  transition: opacity 0.2s;
+}
+.chart .hit {
+  fill: transparent;
+  cursor: default;
+  outline: none;
+}
+.chart .hit.hover,
+.chart .hit:focus-visible {
+  fill: rgba(255, 255, 255, 0.04);
+}
+.m-pro {
+  fill: var(--chart-pro);
+  background: var(--chart-pro);
+}
+.m-advanced {
+  fill: var(--chart-advanced);
+  background: var(--chart-advanced);
+}
+.m-beginner {
+  fill: var(--chart-beginner);
+  background: var(--chart-beginner);
+}
+.m-accent {
+  fill: var(--chart-accent);
+  background: var(--chart-accent);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
+.hbars {
+  display: grid;
+  gap: 12px;
+  margin: 6px 0 4px;
+}
+.hbar {
+  display: grid;
+  grid-template-columns: minmax(90px, 34%) 1fr auto;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+.hbar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hbar-track {
+  height: 14px;
+  display: block;
+}
+.hbar-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 0 4px 4px 0;
+  transition: width 1.1s var(--ease);
+}
+.in .hbar-track i,
+.hbar-track i.in {
+  width: var(--w, 0%);
+}
+.hbar.hover .hbar-track i {
+  filter: brightness(1.2);
+}
+.hbar-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 3ch;
+  text-align: right;
+}
+.mini-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 14px 0 6px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.mini-facts strong {
+  color: var(--text);
+}
+
+/* Form-Leiste: Buchstabe + Farbe, nie Farbe allein */
+.form-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.chip {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+  transition: transform 0.2s var(--ease);
+  flex: none;
+}
+.chip.w {
+  color: var(--win);
+  background: rgba(30, 227, 154, 0.12);
+  border-color: rgba(30, 227, 154, 0.35);
+}
+.chip.l {
+  color: var(--loss);
+  background: rgba(255, 59, 92, 0.1);
+  border-color: rgba(255, 59, 92, 0.35);
+}
+.form-strip .chip:hover,
+.form-strip .chip:focus-visible {
+  transform: translateY(-3px) scale(1.08);
+  outline: none;
+}
+
+#chart-tip {
+  position: fixed;
+  z-index: 120;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 280px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(18, 20, 29, 0.96);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.82rem;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.15s, transform 0.15s;
+}
+#chart-tip.show {
+  opacity: 1;
+  transform: none;
+}
+#chart-tip strong {
+  font-size: 0.95rem;
+}
+#chart-tip span {
+  color: var(--muted);
+}
+
+/* Bestenlisten */
+.leaderboards {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.leaderboard {
+  margin: 0;
+}
+.leaderboard ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.leaderboard li {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.leaderboard li:last-child {
+  border-bottom: 0;
+}
+.leaderboard li.me {
+  background: rgba(30, 227, 154, 0.07);
+}
+.lb-rank {
+  font-family: var(--display);
+  font-weight: 700;
+  color: var(--muted);
+}
+.leaderboard li:first-child .lb-rank {
+  color: var(--gold);
+}
+.lb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lb-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.leaderboard li:first-child .lb-name {
+  font-weight: 700;
+}
+.record {
+  overflow: hidden;
+}
+.record-icon {
+  display: inline-block;
+  font-size: 2rem;
+}
+.record h3 {
+  margin-top: 8px;
+}
+.record p {
+  margin: 0;
+  color: var(--muted);
+}
+.record strong {
+  color: var(--text);
+  font-family: var(--display);
+  font-size: 1.3rem;
+}
+ol.path {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+}
+ol.path li {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.88rem;
+}
+ol.path .chip {
+  width: 26px;
+  height: 26px;
+  font-size: 0.75rem;
+}
+ol.path b {
+  font-variant-numeric: tabular-nums;
+}
+ul.plain {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
 /* ------------------------------------------------------------ auth */
 .auth-wrap {
   display: grid;
@@ -1395,6 +1761,24 @@ tr:nth-child(3) .rank.medal {
 }
 
 @media (max-width: 720px) {
+  .hbar {
+    grid-template-columns: 46% 1fr auto;
+    gap: 8px;
+  }
+  .player-head {
+    gap: 14px;
+  }
+  .avatar.xl {
+    width: 60px;
+    height: 60px;
+    font-size: 1.3rem;
+  }
+  .tile-value {
+    font-size: 1.5rem;
+  }
+  .tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
   .container {
     padding: 18px 16px 70px;
   }

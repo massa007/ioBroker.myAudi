@@ -85,7 +85,8 @@ test('Kompletter Turnierablauf über die API', async (t) => {
   assert.strictEqual(ev.qualifying.matches.filter((m) => m.bye).length, 5);
 
   // Spieler darf nur eigene Spiele eintragen
-  const foreign = ev.qualifying.matches.find((m) => !m.bye && m.a !== ev.myEntryId && m.b !== ev.myEntryId);
+  const paulEntry = ev.entries.find((e) => e.players.some((pl) => pl.id === p.user.id)).id;
+  const foreign = ev.qualifying.matches.find((m) => !m.bye && m.a !== paulEntry && m.b !== paulEntry);
   await assert.rejects(player('POST', `/api/events/${ev.id}/matches/${foreign.id}/result`, { legsA: 2, legsB: 0 }), { status: 403 });
   await assert.rejects(admin('POST', `/api/events/${ev.id}/matches/${foreign.id}/result`, { legsA: 1, legsB: 1 }), { status: 400 });
 
@@ -126,6 +127,18 @@ test('Kompletter Turnierablauf über die API', async (t) => {
   const paul = st2.rows.find((r) => r.name === 'Paul');
   assert.ok(paul.double > 0 && paul.single > 0);
   assert.strictEqual(paul.events, 2);
+
+  // Statistiken sind öffentlich lesbar, ohne Login-Namen preiszugeben
+  const anon = client(port);
+  const ps = await anon('GET', `/api/players/${p.user.id}/stats`);
+  assert.strictEqual(ps.summary.events, 2);
+  assert.strictEqual(ps.total.played, ps.total.won + ps.total.lost);
+  assert.ok(!JSON.stringify(ps).includes('paul'), 'Benutzername darf nicht enthalten sein');
+  const ov = await anon('GET', `/api/stats/overview?season=${season.id}`);
+  assert.strictEqual(ov.totals.events, 2);
+  const es = await anon('GET', `/api/events/${ev.id}/stats`);
+  assert.strictEqual(es.championPaths.length, 3);
+  await assert.rejects(anon('GET', '/api/players/gibtsnicht/stats'), { status: 404 });
 });
 
 test('Sicherheit: Header, Login-Drosselung, CSRF, Sessions', async (t) => {

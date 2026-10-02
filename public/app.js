@@ -18,6 +18,8 @@ const state = {
   refreshTimer: null,
   editing: null,
   seasonFilter: 'points',
+  playerSeason: {},
+  statsSeason: '',
 };
 
 const STATUS_LABEL = {
@@ -166,6 +168,7 @@ function renderChrome() {
     ['#/', 'Übersicht'],
     ['#/events', 'Termine'],
     ['#/seasons', 'Seasons'],
+    ['#/stats', 'Statistiken'],
   ];
   if (state.me) links.push(['#/players', 'Spieler']);
   document.getElementById('nav').innerHTML = links
@@ -175,7 +178,8 @@ function renderChrome() {
     })
     .join('');
   document.getElementById('userbox').innerHTML = state.me
-    ? `<a href="#/profile">${esc(state.me.name)} ${isAdmin() ? '<span class="badge admin">Admin</span>' : ''}</a>
+    ? `<a href="#/players/${esc(state.me.id)}" title="Meine Statistiken">${esc(state.me.name)} ${isAdmin() ? '<span class="badge admin">Admin</span>' : ''}</a>
+       <a href="#/profile" title="Profil & Passwort" aria-label="Profil-Einstellungen">⚙</a>
        <a href="#" data-action="logout">Abmelden</a>`
     : `<a href="#/login">Anmelden</a>${state.registrationOpen || state.needsSetup ? '<a class="btn primary" href="#/register">Registrieren</a>' : ''}`;
   document.getElementById('topbar').classList.remove('open');
@@ -280,7 +284,7 @@ function rankingBlock(rows, limit) {
     <div class="card reveal" data-i="1"><div class="table-wrap"><table><tbody>${rows
       .slice(0, limit)
       .map(
-        (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td>${esc(r.name)}</td>
+        (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td>${playerLink(r.userId, r.name)}</td>
           <td class="bar-cell"><div class="bar"><i data-w="${Math.round((r.points / maxPts) * 100)}"></i></div></td><td class="num"><strong>${esc(r.points)}</strong></td></tr>`
       )
       .join('')}</tbody></table></div></div>
@@ -359,6 +363,7 @@ const TABS = [
   ['qualifying', 'Vorrunde'],
   ['cups', 'Cups'],
   ['results', 'Ergebnis & Punkte'],
+  ['stats', 'Statistik'],
 ];
 
 function defaultTab(ev) {
@@ -380,6 +385,7 @@ async function viewEvent(id, tab) {
   else if (tab === 'qualifying') body = tabQualifying(ev, names);
   else if (tab === 'cups') body = tabCups(ev, names);
   else if (tab === 'results') body = tabResults(ev, names);
+  else if (tab === 'stats') body = await tabStats(ev);
   else if (tab === 'settings' && isAdmin()) body = `<div class="card">${eventForm(ev, await api('GET', '/api/seasons'))}</div>${adminResetBox(ev)}`;
 
   return `
@@ -390,7 +396,7 @@ async function viewEvent(id, tab) {
       ${ev.notes ? `<p class="muted">${esc(ev.notes)}</p>` : ''}
     </div>
     <div class="steps" data-step="${cur}">${steps.map((s, i) => `<span class="${i < cur || ev.status === 'finished' ? 'done' : i === cur ? 'current' : ''}">${STATUS_LABEL[s]}</span>`).join('')}</div>
-    <nav class="tabs">${TABS.map(([k, l]) => `<a href="#/events/${esc(ev.id)}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}
+    <nav class="tabs">${TABS.filter(([k]) => k !== 'stats' || ev.status !== 'registration').map(([k, l]) => `<a href="#/events/${esc(ev.id)}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}
       ${isAdmin() ? `<a href="#/events/${esc(ev.id)}/settings" class="${tab === 'settings' ? 'active' : ''}">⚙ Einstellungen</a>` : ''}</nav>
     ${pendingNotice()}
     ${body}`;
@@ -466,8 +472,8 @@ async function tabEntries(ev) {
       ev.entries.length
         ? `<ul class="entry-list">${ev.entries
             .map(
-              (e, i) => `<li class="reveal" data-i="${i % 8}"><span class="who"><span class="avatar">${initials(e.name)}</span><span><strong>${esc(e.name)}</strong>
-                ${ev.mode === 'double' && e.teamName ? `<br><span class="muted small">${e.players.map((p) => esc(p.name)).join(' & ')}</span>` : ''}</span></span>
+              (e, i) => `<li class="reveal" data-i="${i % 8}"><span class="who"><span class="avatar">${initials(e.name)}</span><span><strong>${e.players.length === 1 ? playerLink(e.players[0].id, e.name) : esc(e.name)}</strong>
+                ${ev.mode === 'double' ? `<br><span class="muted small">${e.players.map((p) => playerLink(p.id, p.name)).join(' & ')}</span>` : ''}</span></span>
                 ${!e.complete ? '<span class="badge warn">Partner gesucht</span>' : ''}
                 ${isAdmin() && open && e.id !== ev.myEntryId ? `<button class="small danger" data-action="entry-remove" data-entry="${esc(e.id)}" aria-label="Entfernen">✕</button>` : ''}</li>`
             )
@@ -763,7 +769,7 @@ async function viewSeason(id) {
           ${data.events.map((e) => `<th class="num" title="${esc(e.name)}"><a href="#/events/${esc(e.id)}">${esc(fmtDate(e.date).slice(0, 6) || e.name)}</a><br><span class="small">${e.mode === 'double' ? 'D' : 'E'}</span></th>`).join('')}</tr></thead>
           <tbody>${rows
             .map(
-              (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td><strong>${esc(r.name)}</strong></td>
+              (r) => `<tr class="${r.userId === state.me?.id ? 'me' : ''}"><td class="rank medal">${esc(r.rank)}</td><td><strong>${playerLink(r.userId, r.name)}</strong></td>
               <td class="bar-cell"><div class="bar"><i data-w="${Math.round((r.value / maxPts) * 100)}"></i></div></td>
               <td class="num"><strong>${esc(r.points)}</strong></td><td class="num">${esc(r.single)}</td><td class="num">${esc(r.double)}</td><td class="num">${esc(r.events)}</td>
               <td class="num">${esc(r.titles)}</td><td class="num">${esc(r.finals)}</td><td class="num">${esc(r.qualiWins)}</td>
@@ -838,7 +844,7 @@ async function viewPlayers() {
       <thead><tr><th>Name</th>${isAdmin() ? '<th>Benutzername</th>' : ''}<th>Rolle</th>${isAdmin() ? '<th></th>' : ''}</tr></thead>
       <tbody>${list
         .map(
-          (u) => `<tr class="${u.id === state.me.id ? 'me' : ''}"><td><strong>${esc(u.name)}</strong></td>${isAdmin() ? `<td class="muted">${u.username ? '@' + esc(u.username) : '–'}</td>` : ''}
+          (u) => `<tr class="${u.id === state.me.id ? 'me' : ''}"><td><strong>${playerLink(u.id, u.name)}</strong></td>${isAdmin() ? `<td class="muted">${u.username ? '@' + esc(u.username) : '–'}</td>` : ''}
           <td>${u.role === 'admin' ? '<span class="badge admin">Admin</span>' : u.guest ? '<span class="badge">Gast</span>' : '<span class="badge">Spieler</span>'}</td>
           ${
             isAdmin()
@@ -933,6 +939,7 @@ function enhance(root, animate) {
   for (const el of root.querySelectorAll('[data-i]')) el.style.setProperty('--i', el.dataset.i);
   for (const el of root.querySelectorAll('[data-w]')) el.style.setProperty('--w', el.dataset.w + '%');
   for (const el of root.querySelectorAll('.bar')) el.classList.add('in');
+  bindTips(root);
   for (const el of root.querySelectorAll('[data-z]')) el.style.transform = `translateZ(${el.dataset.z}px)`;
   const steps = root.querySelector('.steps[data-step]');
   if (steps) {
@@ -1013,6 +1020,7 @@ async function route(silent = false) {
     state.editing = null;
   }
   renderChrome();
+  hideTip();
   const scrollY = window.scrollY;
   try {
     let html;
@@ -1021,7 +1029,9 @@ async function route(silent = false) {
     else if (parts[0] === 'events') html = await viewEvents();
     else if (parts[0] === 'seasons' && parts[1]) html = await viewSeason(parts[1]);
     else if (parts[0] === 'seasons') html = await viewSeasons();
+    else if (parts[0] === 'players' && parts[1]) html = await viewPlayer(parts[1]);
     else if (parts[0] === 'players') html = await viewPlayers();
+    else if (parts[0] === 'stats') html = await viewStats();
     else if (parts[0] === 'login') html = viewLogin();
     else if (parts[0] === 'register') html = viewRegister();
     else if (parts[0] === 'profile') html = viewProfile();
@@ -1122,6 +1132,15 @@ const actions = {
     await api('DELETE', evUrl());
     location.hash = '#/events';
     toast('Termin gelöscht');
+  },
+  async 'player-season'(el) {
+    const id = location.hash.split('/')[2];
+    state.playerSeason[id] = el.dataset.season;
+    route(true);
+  },
+  async 'stats-season'(el) {
+    state.statsSeason = el.dataset.season;
+    route(true);
   },
   async 'season-filter'(el) {
     state.seasonFilter = el.dataset.filter;
